@@ -1424,6 +1424,7 @@
   "room.tr_off": "OFF — texte original",
   "room.tr_…": "…",
   "room.vo_device": "voix locale",
+  "room.vo_cloud": "voix cloud",
   "room.vo_ai": "voix IA",
   "room.vo_off": "voix off",
   "room.vo_…": "…",

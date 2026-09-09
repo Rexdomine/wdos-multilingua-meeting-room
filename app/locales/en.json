@@ -1425,6 +1425,7 @@
   "room.tr_same": "same language",
   "room.tr_…": "…",
   "room.vo_device": "device voice",
+  "room.vo_cloud": "cloud voice",
   "room.vo_ai": "AI voice",
   "room.vo_blocked": "tap needed",
   "room.vo_off": "voice off",

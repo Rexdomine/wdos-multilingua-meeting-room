@@ -329,13 +329,9 @@ export async function render(root, params, ctx) {
     };
     const primeAudio = async () => {
       try {
-        const a = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQQAAAAAAA==');
-        a.muted = true;
-        await a.play();
-        a.pause();
-        audioUnlocked = true;
+        audioUnlocked = await lingua.unlockAudio?.();
         setDiag('voice', '');
-        return true;
+        return audioUnlocked;
       } catch {
         audioUnlocked = false;
         return false;
@@ -550,11 +546,12 @@ export async function render(root, params, ctx) {
       const b = el('button', { class: 'btn btn--primary mt-2',
         text: '▶ Enable live audio' });
       b.onclick = async () => {
-        await primeAudio();
+        const ok = await primeAudio();
         if (url) {
           try { await new Audio(url).play(); } catch { /* user can tap Test audio */ }
         }
         b.remove();
+        if (!ok) setDiag('voice', t('room.voiceBlocked'), true);
         diagnoseVoiceLane();
         paintChips();
       };

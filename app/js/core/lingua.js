@@ -15,6 +15,7 @@ const VOICE_WAIT_MS = 1200;
 const SPEECH_CHUNK_CHARS = 180;
 const CLOUD_FIRST_LANGS = new Set(['fr', 'pt', 'ar', 'sw']);
 const CLOUD_SPEAK_TIMEOUT_MS = 12000;
+let audioCtx = null;
 
 export function estimateSpeakMs(text) {
   return Math.min(1500 + String(text || '').length * 90, 30000);
@@ -26,6 +27,21 @@ function withTimeout(promise, ms, label = 'timeout') {
     timer = setTimeout(() => reject(new Error(label)), ms);
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+export async function unlockAudio() {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return false;
+  if (!audioCtx) audioCtx = new AC();
+  if (audioCtx.state !== 'running') await audioCtx.resume();
+  const buffer = audioCtx.createBuffer(1, 1, audioCtx.sampleRate);
+  const source = audioCtx.createBufferSource();
+  const gain = audioCtx.createGain();
+  gain.gain.value = 0.001;
+  source.buffer = buffer;
+  source.connect(gain).connect(audioCtx.destination);
+  source.start(0);
+  return audioCtx.state === 'running';
 }
 
 function resumeSynth() {
@@ -299,6 +315,39 @@ export function createLingua() {
     if (aborted(signal)) throw new DOMException('cancelled', 'AbortError');
   }
 
+  async function playBlobWithContext(blob, signal) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) throw new Error('audio-context-unavailable');
+    if (!audioCtx) audioCtx = new AC();
+    if (audioCtx.state !== 'running') await audioCtx.resume();
+    throwIfAborted(signal);
+    const bytes = await blob.arrayBuffer();
+    throwIfAborted(signal);
+    const buffer = await audioCtx.decodeAudioData(bytes.slice(0));
+    throwIfAborted(signal);
+    const source = audioCtx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(audioCtx.destination);
+    await new Promise((resolve, reject) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        resolve();
+      };
+      const cancel = () => {
+        try { source.stop(0); } catch { /* already stopped */ }
+        finish();
+      };
+      signal?.addEventListener?.('abort', cancel, { once: true });
+      source.onended = finish;
+      try { source.start(0); }
+      catch (e) { reject(e); }
+      setTimeout(finish, Math.max(2500, buffer.duration * 1000 + 3000));
+    });
+    throwIfAborted(signal);
+  }
+
   async function speakDevice(text, lang, voice, signal) {
     const chunks = speechChunks(text);
     if (!chunks.length) return;
@@ -366,30 +415,15 @@ export function createLingua() {
           if (aborted(signal)) return 'cancelled';
           const blob = await cloudSpeakBlob(part, lang);
           if (aborted(signal)) return 'cancelled';
-          const url = URL.createObjectURL(blob);
-          const audio = new Audio(url);
-          let finishAudio = () => {};
-          const cancel = () => {
-            try { audio.pause(); audio.currentTime = 0; } catch { /* optional */ }
-            URL.revokeObjectURL(url);
-            finishAudio();
-          };
-          signal?.addEventListener?.('abort', cancel, { once: true });
-          try { await audio.play(); }
+          try { await playBlobWithContext(blob, signal); }
           catch {
+            const url = URL.createObjectURL(blob);
             status.voice = 'blocked';
             status.voiceDetail = 'Tap required to start generated audio';
             onBlockedUrl?.(url);
             return 'blocked';
           }
-          await withTimeout(new Promise((r) => {
-            finishAudio = r;
-            audio.onended = r;
-            audio.onerror = r;
-          }), Math.max(2500, estimateSpeakMs(part) + 3000), 'audio-ended-timeout');
-          signal?.removeEventListener?.('abort', cancel);
           if (aborted(signal)) return 'cancelled';
-          URL.revokeObjectURL(url);
         }
         status.voice = 'cloud';
         status.voiceDetail = info.detail;
@@ -448,5 +482,5 @@ export function createLingua() {
     return job;
   }
 
-  return { translate, speak, voiceStatus, estimateSpeakMs, status };
+  return { translate, speak, voiceStatus, unlockAudio, estimateSpeakMs, status };
 }
