@@ -305,6 +305,22 @@ export async function render(root, params, ctx) {
     let liveAudioOn = localStorage.getItem('wdos.room.liveAudio') !== 'off';
     const audioToggle = el('button', { class: 'btn btn--secondary',
       type: 'button' });
+    let audioUnlocked = false;
+    let showAudioUnlock = () => {};
+    const primeAudio = async () => {
+      try {
+        const a = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQQAAAAAAA==');
+        a.muted = true;
+        await a.play();
+        a.pause();
+        audioUnlocked = true;
+        setDiag('voice', '');
+        return true;
+      } catch {
+        audioUnlocked = false;
+        return false;
+      }
+    };
     const paintAudioToggle = () => {
       audioToggle.textContent = liveAudioOn ? '🔊 Audio ON' : '🔇 Audio OFF';
       audioToggle.classList.toggle('btn--primary', liveAudioOn);
@@ -314,9 +330,10 @@ export async function render(root, params, ctx) {
         ? 'Live translated audio is ON. Tap to turn it off.'
         : 'Live translated audio is OFF. Tap to turn it on.';
     };
-    audioToggle.onclick = () => {
+    audioToggle.onclick = async () => {
       liveAudioOn = !liveAudioOn;
       localStorage.setItem('wdos.room.liveAudio', liveAudioOn ? 'on' : 'off');
+      if (liveAudioOn) await primeAudio();
       paintAudioToggle();
       toast(liveAudioOn ? 'Live translated audio ON' : 'Live translated audio OFF');
     };
@@ -446,6 +463,7 @@ export async function render(root, params, ctx) {
       invite,
       el('button', { class: 'btn btn--secondary', title: t('room.voiceTest'),
         text: 'Test audio', onclick: async () => {
+          await primeAudio();
           const to = myHear.value;
           const sample = await lingua.translate(
             'The WODDI interpreter is working.', 'en', to);
@@ -479,6 +497,21 @@ export async function render(root, params, ctx) {
         text: t('room.speakHint') }),
     ]);
     const capFeed = el('div', { class: 'room-caps mt-2' });
+    showAudioUnlock = (url) => {
+      const b = el('button', { class: 'btn btn--primary mt-2',
+        text: '▶ Enable live audio' });
+      b.onclick = async () => {
+        await primeAudio();
+        if (url) {
+          try { await new Audio(url).play(); } catch { /* user can tap Test audio */ }
+        }
+        b.remove();
+        diagnoseVoiceLane();
+        paintChips();
+      };
+      capFeed.append(b);
+      capFeed.scrollTop = capFeed.scrollHeight;
+    };
     out.append(frame, speakBar, capFeed);
     out.append(el('p', { class: 'muted', style: 'font-size:12px;',
       text: t('room.hybridHint') }));
@@ -771,7 +804,7 @@ export async function render(root, params, ctx) {
       const estMs = lingua.estimateSpeakMs
         ? lingua.estimateSpeakMs(spoken) : Math.min(1500 + spoken.length * 90, 30000);
       const mode = await lingua.speak(spoken, lang, {
-        onBlockedUrl: opts.onBlockedUrl || (() => {}),
+        onBlockedUrl: opts.onBlockedUrl || showAudioUnlock,
         beforeStart: async () => {
           announceTts(spoken, lang, estMs);
           holdMicFor(TTS_LEAD_MS + estMs + TTS_TAIL_MS);
@@ -783,6 +816,7 @@ export async function render(root, params, ctx) {
           { lang: langName(lang) }), true);
       } else if (mode === 'blocked') {
         setDiag('voice', t('room.voiceBlocked'), true);
+        if (!audioUnlocked) showAudioUnlock();
       }
       holdMicFor(700);
       paintChips();
