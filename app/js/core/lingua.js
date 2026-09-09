@@ -16,6 +16,8 @@ const SPEECH_CHUNK_CHARS = 180;
 const CLOUD_FIRST_LANGS = new Set(['fr', 'pt', 'ar', 'sw']);
 const CLOUD_SPEAK_TIMEOUT_MS = 12000;
 let audioCtx = null;
+let outputAudio = null;
+let warmupUrl = null;
 
 export function estimateSpeakMs(text) {
   return Math.min(1500 + String(text || '').length * 90, 30000);
@@ -30,18 +32,73 @@ function withTimeout(promise, ms, label = 'timeout') {
 }
 
 export async function unlockAudio() {
+  const audio = ensureOutputAudio();
+  let mediaOk = false;
+  if (!warmupUrl) warmupUrl = tinyWarmupUrl();
+  try {
+    audio.pause();
+    audio.src = warmupUrl;
+    audio.currentTime = 0;
+    audio.volume = 0.04;
+    const playPromise = audio.play();
+    if (playPromise?.then) await playPromise;
+    mediaOk = true;
+    setTimeout(() => {
+      try { audio.pause(); audio.currentTime = 0; audio.volume = 1; } catch { /* optional */ }
+    }, 120);
+  } catch {
+    try { audio.volume = 1; } catch { /* optional */ }
+  }
   const AC = window.AudioContext || window.webkitAudioContext;
-  if (!AC) return false;
-  if (!audioCtx) audioCtx = new AC();
-  if (audioCtx.state !== 'running') await audioCtx.resume();
-  const buffer = audioCtx.createBuffer(1, 1, audioCtx.sampleRate);
-  const source = audioCtx.createBufferSource();
-  const gain = audioCtx.createGain();
-  gain.gain.value = 0.001;
-  source.buffer = buffer;
-  source.connect(gain).connect(audioCtx.destination);
-  source.start(0);
-  return audioCtx.state === 'running';
+  let ctxOk = false;
+  if (AC) {
+    if (!audioCtx) audioCtx = new AC();
+    if (audioCtx.state !== 'running') await audioCtx.resume();
+    const buffer = audioCtx.createBuffer(1, 1, audioCtx.sampleRate);
+    const source = audioCtx.createBufferSource();
+    const gain = audioCtx.createGain();
+    gain.gain.value = 0.001;
+    source.buffer = buffer;
+    source.connect(gain).connect(audioCtx.destination);
+    source.start(0);
+    ctxOk = audioCtx.state === 'running';
+  }
+  return mediaOk || ctxOk;
+}
+
+function ensureOutputAudio() {
+  if (outputAudio) return outputAudio;
+  outputAudio = new Audio();
+  outputAudio.preload = 'auto';
+  outputAudio.autoplay = false;
+  outputAudio.controls = false;
+  outputAudio.playsInline = true;
+  outputAudio.setAttribute('playsinline', '');
+  outputAudio.setAttribute('webkit-playsinline', '');
+  outputAudio.style.cssText = 'position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;';
+  try { document.body?.appendChild(outputAudio); } catch { /* optional */ }
+  return outputAudio;
+}
+
+function tinyWarmupUrl() {
+  const sampleRate = 8000;
+  const samples = Math.floor(sampleRate * 0.08);
+  const dataSize = samples * 2;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+  const write = (offset, text) => {
+    for (let i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i));
+  };
+  write(0, 'RIFF'); view.setUint32(4, 36 + dataSize, true); write(8, 'WAVE');
+  write(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true); view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true); view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true); write(36, 'data'); view.setUint32(40, dataSize, true);
+  for (let i = 0; i < samples; i++) {
+    const amp = Math.sin(2 * Math.PI * 440 * (i / sampleRate)) * 900;
+    view.setInt16(44 + i * 2, amp, true);
+  }
+  return URL.createObjectURL(new Blob([buffer], { type: 'audio/wav' }));
 }
 
 function resumeSynth() {
@@ -317,10 +374,14 @@ export function createLingua() {
 
   async function playBlobWithElement(blob, signal) {
     const url = URL.createObjectURL(blob);
-    const audio = new Audio(url);
+    const audio = ensureOutputAudio();
     audio.preload = 'auto';
     let cleanup = () => {};
     try {
+      audio.pause();
+      audio.src = url;
+      audio.currentTime = 0;
+      audio.volume = 1;
       throwIfAborted(signal);
       const playPromise = audio.play();
       if (playPromise?.then) await playPromise;

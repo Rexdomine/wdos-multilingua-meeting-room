@@ -306,14 +306,8 @@ export async function render(root, params, ctx) {
     const audioToggle = el('button', { class: 'btn btn--secondary',
       type: 'button' });
     const audioQueue = [];
-    const playQueuedAudio = el('button', { class: 'btn btn--primary',
-      type: 'button', style: 'display:none;' });
-    const paintAudioQueue = () => {
-      playQueuedAudio.style.display = audioQueue.length ? '' : 'none';
-      playQueuedAudio.textContent = audioQueue.length > 1
-        ? `▶ Play translated audio (${audioQueue.length})`
-        : '▶ Play translated audio';
-    };
+    let flushingAudioQueue = false;
+    const paintAudioQueue = () => {};
     const queueBlockedAudio = (url) => {
       if (!url) return;
       audioQueue.push(url);
@@ -324,7 +318,9 @@ export async function render(root, params, ctx) {
       setDiag('voice', t('room.voiceBlocked'), true);
       paintAudioQueue();
     };
-    playQueuedAudio.onclick = async () => {
+    const flushAudioQueue = async () => {
+      if (flushingAudioQueue || !liveAudioOn || !audioQueue.length) return;
+      flushingAudioQueue = true;
       paintAudioQueue();
       setDiag('voice', '');
       while (audioQueue.length) {
@@ -345,6 +341,7 @@ export async function render(root, params, ctx) {
         }
       }
       paintAudioQueue();
+      flushingAudioQueue = false;
     };
     let audioUnlocked = false;
     let showAudioUnlock = () => {};
@@ -395,7 +392,7 @@ export async function render(root, params, ctx) {
         cancelVoice();
         setDiag('voice', '');
       } else {
-        primeAudio().then(() => diagnoseVoiceLane()).catch(() => {});
+        primeAudio().then(() => flushAudioQueue()).then(() => diagnoseVoiceLane()).catch(() => {});
       }
       toast(liveAudioOn ? 'Live translated audio ON' : 'Live translated audio OFF');
     };
@@ -562,7 +559,7 @@ export async function render(root, params, ctx) {
         };
         return testBtn;
       })(),
-      audioToggle, playQueuedAudio,
+      audioToggle,
       engineChip, azureChip, transChip, voiceChip, interpretingChip, versionChip,
       el('button', { class: 'btn btn--danger', text: t('room.endCall'),
         onclick: () => { userEnded = true; stopAll(); lobby(); } }),
@@ -597,6 +594,11 @@ export async function render(root, params, ctx) {
       capFeed.scrollTop = capFeed.scrollHeight;
     };
     out.append(frame, speakBar, capFeed);
+    document.addEventListener('pointerdown', () => {
+      if (liveAudioOn && audioQueue.length) {
+        primeAudio().then(() => flushAudioQueue()).catch(() => {});
+      }
+    }, { passive: true });
     out.append(el('p', { class: 'muted', style: 'font-size:12px;',
       text: t('room.hybridHint') }));
 
