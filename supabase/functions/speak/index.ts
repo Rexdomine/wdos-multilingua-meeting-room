@@ -41,8 +41,6 @@ const GROQ_VOICES: Record<string, { model: string; voice: string }> = {
   en: { model: "canopylabs/orpheus-v1-english", voice: "hannah" },
 };
 const GOOGLE_TTS_LANGS = new Set(["fr", "pt", "sw"]);
-const LANGS = [...new Set(["en", ...Object.keys(AZURE_VOICES),
-  ...Object.keys(GROQ_VOICES), ...GOOGLE_TTS_LANGS])];
 const MAX_CHARS = 220;
 const GROQ_URL = "https://api.groq.com/openai/v1/audio/speech";
 const GOOGLE_TTS_URL = "https://translate.google.com/translate_tts";
@@ -66,6 +64,18 @@ function azureTtsUrl() {
     return AZURE_ENDPOINT.replace(/\/+$/, "") + "/cognitiveservices/v1";
   }
   return "";
+}
+
+function configuredLangs() {
+  const langs = new Set<string>();
+  if (AZURE_KEY && azureTtsUrl()) {
+    for (const lang of Object.keys(AZURE_VOICES)) langs.add(lang);
+  }
+  if ((Deno.env.get("GROQ_API_KEY") || "").trim()) {
+    for (const lang of Object.keys(GROQ_VOICES)) langs.add(lang);
+  }
+  for (const lang of GOOGLE_TTS_LANGS) langs.add(lang);
+  return [...langs].sort();
 }
 
 function escapeXml(s: string) {
@@ -142,7 +152,8 @@ async function groqSpeak(text: string, lang: string): Promise<Response | null> {
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   if (req.method === "GET") {
-    return json({ configured: true, langs: LANGS,
+    const langs = configuredLangs();
+    return json({ configured: langs.length > 0, langs,
       azureConfigured: !!(AZURE_KEY && azureTtsUrl()),
       azureVoices: AZURE_VOICES,
       fallback: "azure_speech_tts" });
@@ -159,7 +170,7 @@ Deno.serve(async (req) => {
   try { body = await req.json(); } catch { body = {}; }
   const text = String(body.text || "").trim().slice(0, MAX_CHARS);
   const lang = String(body.lang || "").trim().toLowerCase();
-  if (!text || !LANGS.includes(lang)) return json({ error: "bad_input" }, 400);
+  if (!text || !configuredLangs().includes(lang)) return json({ error: "bad_input" }, 400);
 
   try {
     const azure = await azureSpeak(text, lang);

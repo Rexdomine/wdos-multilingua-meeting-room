@@ -487,9 +487,6 @@ export async function render(root, params, ctx) {
           title: t('room.voiceTest'), text: 'Test audio' });
         testBtn.onclick = async () => {
           const started = nextVoiceSignal();
-          liveAudioOn = true;
-          localStorage.setItem('wdos.room.liveAudio', 'on');
-          paintAudioToggle();
           testBtn.disabled = true;
           testBtn.textContent = 'Testing…';
           try {
@@ -505,6 +502,7 @@ export async function render(root, params, ctx) {
             noteTranslateFallback('The WODDI interpreter is working.',
               sample, 'en', to);
             const mode = await withTimeout(speakOut(sample, to, {
+              forceAudio: true,
               signal: started.signal,
               onBlockedUrl: (u) => {
                 const b = el('button', { class: 'btn btn--quiet',
@@ -846,7 +844,7 @@ export async function render(root, params, ctx) {
     speakOut = async (text, lang, opts = {}) => {
       const spoken = String(text || '').trim();
       if (!spoken) return 'off';
-      if (!liveAudioOn) return 'muted';
+      if (!liveAudioOn && !opts.forceAudio) return 'muted';
       const started = opts.signal
         ? { seq: voiceSeq, signal: opts.signal }
         : nextVoiceSignal();
@@ -856,13 +854,15 @@ export async function render(root, params, ctx) {
         onBlockedUrl: opts.onBlockedUrl || showAudioUnlock,
         signal: started.signal,
         beforeStart: async () => {
-          if (started.seq !== voiceSeq || started.signal.aborted || !liveAudioOn) return;
+          if (started.seq !== voiceSeq || started.signal.aborted
+              || (!liveAudioOn && !opts.forceAudio)) return;
           announceTts(spoken, lang, estMs);
           holdMicFor(TTS_LEAD_MS + estMs + TTS_TAIL_MS);
           await wait(TTS_LEAD_MS);
         },
       });
-      if (started.seq !== voiceSeq || mode === 'cancelled' || !liveAudioOn) return 'muted';
+      if (started.seq !== voiceSeq || mode === 'cancelled'
+          || (!liveAudioOn && !opts.forceAudio)) return 'muted';
       if (mode === 'off') {
         setDiag('voice', t('room.noVoiceDevice',
           { lang: langName(lang) }), true);
@@ -1153,6 +1153,7 @@ export async function render(root, params, ctx) {
     let rec = null; let recStream = null;
     let azureActive = false; let azureReady = false; let azureSeq = 0;
     let azureRecognizer = null;
+    let azureTokenData = null; let azureTokenUntil = 0;
     let recBusy = false; let recMime = '';
     let vadCtx = null; let vadTimer = null; let vadBuf = null;
     let segStartAt = 0; let segHadSpeech = false; let speechMs = 0;
@@ -1183,10 +1184,15 @@ export async function render(root, params, ctx) {
       timingBox.textContent = `${line} · p50 ${fmtMs(pct(totals, 0.5))} · p95 ${fmtMs(pct(totals, 0.95))}`;
     };
     async function fetchAzureSpeechToken() {
-      const { data, error } = await db().functions.invoke('azure-speech-token',
-        { method: 'POST', body: { room } });
+      const now = Date.now();
+      if (azureTokenData?.token && now < azureTokenUntil) return azureTokenData;
+      const { data, error } = await withTimeout(db().functions.invoke('azure-speech-token',
+        { method: 'POST', body: { room } }), 10000, 'azure-token-timeout');
       if (error) throw error;
       if (!data?.token || !data?.region) throw new Error('azure-token-empty');
+      azureTokenData = data;
+      azureTokenUntil = now + Math.max(60000,
+        (Number(data.expires_in_seconds) || 540) * 1000 - 60000);
       return data;
     }
     function azureTranslations(result) {
@@ -1198,6 +1204,8 @@ export async function render(root, params, ctx) {
       return out;
     }
     async function startAzureInterpreter() {
+      if (azureRecognizer && azureActive) return;
+      stopAzureInterpreter();
       const tokenData = await fetchAzureSpeechToken();
       const SDK = await loadAzureSpeechSdk();
       const speechConfig = SDK.SpeechTranslationConfig.fromAuthorizationToken(
@@ -1257,13 +1265,22 @@ export async function render(root, params, ctx) {
         setDiag('azure', t('room.azureError', { why }) || ('Azure interpreter stopped: ' + why), true);
         azureChip.textContent = '⚠ Azure fallback';
         azureChip.style.color = 'var(--magenta)';
-        azureActive = false;
+        azureActive = false; azureReady = false;
+        if (speaking) {
+          speaking = false; paintSpeak();
+          micChip.textContent = '🎤 ' + t('room.micIdle');
+          cloudSetSpeaking(true, 'engine');
+        }
       };
       recognizer.sessionStopped = () => {
-        azureActive = false;
+        azureActive = false; azureReady = false; azureRecognizer = null;
         if (!userEnded) {
           azureChip.textContent = '⚠ Azure stopped';
           azureChip.style.color = 'var(--magenta)';
+          if (speaking) {
+            speaking = false; paintSpeak();
+            micChip.textContent = '🎤 ' + t('room.micIdle');
+          }
         }
       };
       await new Promise((resolve, reject) => {
@@ -1500,7 +1517,8 @@ export async function render(root, params, ctx) {
       const fns = db().functions;
       if (!fns || !navigator.mediaDevices) return;
       try {
-        const { data, error } = await fns.invoke('azure-speech-token', { method: 'GET' });
+        const data = await fetchAzureSpeechToken();
+        const error = null;
         if (!error && data?.configured && data?.token) {
           setSpeaking = azureSetSpeaking;
           setDiag('browser', '');
