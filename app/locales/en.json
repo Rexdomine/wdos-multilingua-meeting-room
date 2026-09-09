@@ -1438,7 +1438,7 @@
   "room.buildSkewShort": "{name} on v{theirs}",
   "room.buildSkew": "{name} is running WDOS v{theirs}; this tab is v{mine}. Ask everyone to refresh before testing interpretation.",
   "room.noVoiceDevice": "No {lang} voice on this device — showing text only. Install that language in the phone's Text-to-speech settings, or ask HQ to set the WODDI voice Space.",
-  "room.voiceBlocked": "The browser blocked audio playback — tap the voice-test button once, then try again.",
+  "room.voiceBlocked": "The browser blocked automatic playback. Tap ▶ Play translated audio to hear the generated clip.",
   "room.translateFallback": "Translation {from}→{to} fell back to original text. Device translation, AI token, or free quota is unavailable right now.",
   "room.copyTiming": "Copy timing log",
   "room.timingCopied": "Timing copied",

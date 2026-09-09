@@ -305,6 +305,45 @@ export async function render(root, params, ctx) {
     let liveAudioOn = localStorage.getItem('wdos.room.liveAudio') !== 'off';
     const audioToggle = el('button', { class: 'btn btn--secondary',
       type: 'button' });
+    const audioQueue = [];
+    const playQueuedAudio = el('button', { class: 'btn btn--primary',
+      type: 'button', style: 'display:none;' });
+    const paintAudioQueue = () => {
+      playQueuedAudio.style.display = audioQueue.length ? '' : 'none';
+      playQueuedAudio.textContent = audioQueue.length > 1
+        ? `▶ Play translated audio (${audioQueue.length})`
+        : '▶ Play translated audio';
+    };
+    const queueBlockedAudio = (url) => {
+      if (!url) return;
+      audioQueue.push(url);
+      while (audioQueue.length > 8) {
+        const old = audioQueue.shift();
+        try { URL.revokeObjectURL(old); } catch { /* optional */ }
+      }
+      setDiag('voice', t('room.voiceBlocked'), true);
+      paintAudioQueue();
+    };
+    playQueuedAudio.onclick = async () => {
+      const jobs = audioQueue.splice(0, audioQueue.length);
+      paintAudioQueue();
+      setDiag('voice', '');
+      for (const url of jobs) {
+        try {
+          const audio = new Audio(url);
+          await audio.play();
+          await withTimeout(new Promise((resolve) => {
+            audio.onended = resolve;
+            audio.onerror = resolve;
+          }), 18000, 'queued-audio-timeout');
+        } catch {
+          audioQueue.unshift(url);
+          setDiag('voice', t('room.voiceBlocked'), true);
+          break;
+        }
+      }
+      paintAudioQueue();
+    };
     let audioUnlocked = false;
     let showAudioUnlock = () => {};
     let voiceAbort = null;
@@ -504,12 +543,7 @@ export async function render(root, params, ctx) {
             const mode = await withTimeout(speakOut(sample, to, {
               forceAudio: true,
               signal: started.signal,
-              onBlockedUrl: (u) => {
-                const b = el('button', { class: 'btn btn--quiet',
-                  text: '▶ ' + t('room.tapPlay') });
-                b.onclick = () => { new Audio(u).play(); b.remove(); };
-                capFeed.append(b);
-              } }), 18000, 'audio-test-timeout');
+              onBlockedUrl: queueBlockedAudio }), 18000, 'audio-test-timeout');
             if (started.seq === voiceSeq && ['blocked', 'off'].includes(mode)) {
               toastError(t('room.noVoiceFor'));
             }
@@ -526,7 +560,7 @@ export async function render(root, params, ctx) {
         };
         return testBtn;
       })(),
-      audioToggle,
+      audioToggle, playQueuedAudio,
       engineChip, azureChip, transChip, voiceChip, interpretingChip, versionChip,
       el('button', { class: 'btn btn--danger', text: t('room.endCall'),
         onclick: () => { userEnded = true; stopAll(); lobby(); } }),
@@ -541,6 +575,7 @@ export async function render(root, params, ctx) {
     ]);
     const capFeed = el('div', { class: 'room-caps mt-2' });
     showAudioUnlock = (url) => {
+      if (url) queueBlockedAudio(url);
       const b = el('button', { class: 'btn btn--primary mt-2',
         text: '▶ Enable live audio' });
       b.onclick = async () => {

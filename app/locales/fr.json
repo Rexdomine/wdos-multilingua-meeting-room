@@ -1709,7 +1709,7 @@
   "room.buildSkewShort": "{name} : v{theirs}",
   "room.buildSkew": "{name} utilise WDOS v{theirs} ; cet onglet est en v{mine}. Demandez à tout le monde d’actualiser avant de tester l’interprétation.",
   "room.noVoiceDevice": "Aucune voix {lang} sur cet appareil, le texte s’affiche seulement. Installez cette langue dans les réglages de synthèse vocale du téléphone, ou demandez au siège d’activer la voix WODDI.",
-  "room.voiceBlocked": "Le navigateur a bloqué la lecture audio. Touchez une fois le bouton de test de voix, puis réessayez.",
+  "room.voiceBlocked": "Le navigateur a bloqué la lecture automatique. Touchez ▶ Play translated audio pour écouter l’audio généré.",
   "room.translateFallback": "La traduction {from}→{to} est revenue au texte original. La traduction de l’appareil, la clé IA ou le quota gratuit est indisponible pour le moment.",
   "room.earsRecording": "enregistrement… touchez Parler pour envoyer",
   "room.earsSending": "compréhension…",
