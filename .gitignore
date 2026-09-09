@@ -2,6 +2,7 @@
 .env.*
 !.env.example
 .vercel/
+supabase/.temp/
 node_modules/
 dist/
 build/
