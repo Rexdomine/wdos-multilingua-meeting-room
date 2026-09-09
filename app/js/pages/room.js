@@ -38,6 +38,22 @@ function loadCallLib(domain, src = `https://${domain}/external_api.js`) {
   return libLoaded.get(src);
 }
 
+function loadAzureSpeechSdk() {
+  const src = 'https://aka.ms/csspeech/jsbrowserpackageraw';
+  if (window.SpeechSDK) return Promise.resolve(window.SpeechSDK);
+  if (!libLoaded.has(src)) {
+    libLoaded.set(src, new Promise((res, rej) => {
+      const sc = document.createElement('script');
+      sc.src = src;
+      sc.onload = () => window.SpeechSDK ? res(window.SpeechSDK) : rej(new Error('azure-sdk'));
+      sc.onerror = () => { libLoaded.delete(src); rej(new Error('azure-sdk-load')); };
+      document.head.append(sc);
+      setTimeout(() => { libLoaded.delete(src); rej(new Error('azure-sdk-timeout')); }, 15000);
+    }));
+  }
+  return libLoaded.get(src);
+}
+
 // Asks the meeting-token Edge Function for a personal token for this room.
 // Resolves { ok: true, data } or { ok: false, why } — never throws, because
 // a missing engine must degrade to the open-tab call, not break the page.
@@ -225,15 +241,14 @@ export async function render(root, params, ctx) {
     const lingua = createLingua();
     const myName = `${ctx.profile.first_name} ${ctx.profile.last_name}`.trim();
 
-    const LANGS = [['en','English'],['fr','Français'],['ha','Hausa'],
-      ['yo','Yorùbá'],['ig','Igbo'],['sw','Kiswahili'],['pt','Português'],
-      ['ar','العربية']];
-    // The microphone understands these five reliably; regioned tags make
-    // recognition noticeably more accurate. Everyone can LISTEN in all
-    // eight; speaking Hausa, Yorùbá or Igbo arrives with the voice Space.
-    const SR_LANGS = [['en','English','en-US'],['fr','Français','fr-FR'],
-      ['ar','العربية','ar-SA'],['pt','Português','pt-PT'],
-      ['sw','Kiswahili','sw-KE']];
+    const LANGS = [['en','English'],['fr','Français'],['pt','Português'],
+      ['ar','العربية'],['sw','Kiswahili']];
+    // Azure Friday lane: one English input stream, four target languages.
+    // The previous browser/cloud clip path remains below as an emergency
+    // fallback if Azure token minting or SDK loading fails.
+    const SR_LANGS = [['en','English','en-US']];
+    const AZURE_TARGETS = ['fr', 'pt', 'ar', 'sw'];
+    const AZURE_VOICES = { fr: 'fr-FR', pt: 'pt-BR', ar: 'ar-SA', sw: 'sw-KE' };
     const srTag = (c) => (SR_LANGS.find(([x]) => x === c) || [])[2] || 'en-US';
     const pref = (ctx.profile.preferred_locale || 'en').slice(0, 2);
     // The last choice wins over the profile locale, so a person picks her
@@ -281,7 +296,8 @@ export async function render(root, params, ctx) {
       if (restartTimer) clearTimeout(restartTimer);
       if (interpretingTimer) clearTimeout(interpretingTimer);
       document.removeEventListener('visibilitychange', onHidden);
-      try { recog?.stop(); } catch { /* off */ }
+      try { stopAzureInterpreter(); } catch { /* off */ }
+      try { recog?.stop?.(); recog?.stopContinuousRecognitionAsync?.(() => {}, () => {}); } catch { /* off */ }
       try { api?.dispose(); } catch { /* gone */ }
       try { if (channel) db().removeChannel(channel); } catch { /* gone */ }
       restartTimer = null; interpretingTimer = null;
@@ -746,7 +762,12 @@ export async function render(root, params, ctx) {
       const to = myHear.value;
       const from = pl.lang || 'en';
       const translateStart = performance.now();
-      const shown = await lingua.translate(pl.text, from, to);
+      let shown = String(pl.translations?.[to] || '').trim();
+      if (!shown) shown = await lingua.translate(pl.text, from, to);
+      else {
+        lingua.status.translate = pl.provider === 'azure' ? 'cloud' : lingua.status.translate;
+        lingua.status.translateDetail = pl.provider || '';
+      }
       const translateMs = Math.round(performance.now() - translateStart);
       noteTranslateFallback(pl.text, shown, from, to);
       capFeed.append(el('p', { style: 'margin:2px 0;font-size:14px;',
@@ -796,7 +817,8 @@ export async function render(root, params, ctx) {
       lastCap = text.toLowerCase(); lastCapAt = now;
       if (chanLive) {
         sendBroadcast('cap', { seq: meta.seq || null, text, lang: mySpeak.value,
-          name: myName, timing: meta });
+          name: myName, timing: meta, translations: meta.translations || null,
+          provider: meta.provider || null });
       }
       capFeed.append(el('p', { class: 'muted',
         style: 'margin:2px 0;font-size:13px;',
@@ -953,6 +975,8 @@ export async function render(root, params, ctx) {
     // takes the same handleFinal path as before. The browser recogniser
     // stays as the fallback when the cloud is not configured.
     let rec = null; let recStream = null;
+    let azureActive = false; let azureReady = false; let azureSeq = 0;
+    let azureRecognizer = null;
     let recBusy = false; let recMime = '';
     let vadCtx = null; let vadTimer = null; let vadBuf = null;
     let segStartAt = 0; let segHadSpeech = false; let speechMs = 0;
@@ -982,6 +1006,77 @@ export async function render(root, params, ctx) {
       const totals = timingLines.map((x) => Number((x.match(/total_ms=(\d+)/) || [])[1])).filter(Boolean);
       timingBox.textContent = `${line} · p50 ${fmtMs(pct(totals, 0.5))} · p95 ${fmtMs(pct(totals, 0.95))}`;
     };
+    async function fetchAzureSpeechToken() {
+      const { data, error } = await db().functions.invoke('azure-speech-token',
+        { method: 'POST', body: { room } });
+      if (error) throw error;
+      if (!data?.token || !data?.region) throw new Error('azure-token-empty');
+      return data;
+    }
+    function azureTranslations(result) {
+      const out = {};
+      for (const lang of AZURE_TARGETS) {
+        const v = String(result?.translations?.get?.(lang) || '').trim();
+        if (v) out[lang] = v;
+      }
+      return out;
+    }
+    async function startAzureInterpreter() {
+      const tokenData = await fetchAzureSpeechToken();
+      const SDK = await loadAzureSpeechSdk();
+      const speechConfig = SDK.SpeechTranslationConfig.fromAuthorizationToken(
+        tokenData.token, tokenData.region);
+      speechConfig.speechRecognitionLanguage = 'en-US';
+      for (const lang of AZURE_TARGETS) speechConfig.addTargetLanguage(lang);
+      if (SDK.PropertyId?.SpeechServiceConnection_InitialSilenceTimeoutMs) {
+        speechConfig.setProperty(SDK.PropertyId.SpeechServiceConnection_InitialSilenceTimeoutMs, '2000');
+      }
+      if (SDK.PropertyId?.Speech_SegmentationSilenceTimeoutMs) {
+        speechConfig.setProperty(SDK.PropertyId.Speech_SegmentationSilenceTimeoutMs, '350');
+      }
+      const audioConfig = SDK.AudioConfig.fromDefaultMicrophoneInput();
+      const recognizer = new SDK.TranslationRecognizer(speechConfig, audioConfig);
+      azureRecognizer = recognizer;
+      recog = recognizer;
+      azureActive = true;
+      azureReady = true;
+      sessionHeard = true;
+      micChip.textContent = '🎤 Azure live';
+      setDiag('ears', t('room.azureReady') || 'Azure live interpreter is streaming.');
+      recognizer.recognizing = (_s, e) => {
+        const heard = String(e?.result?.text || '').trim();
+        if (heard && speaking) micChip.textContent = '🎤 Azure hearing ' + heard.slice(-48);
+      };
+      recognizer.recognized = (_s, e) => {
+        const result = e?.result;
+        if (!result || result.reason !== SDK.ResultReason.TranslatedSpeech) return;
+        const text = String(result.text || '').trim();
+        if (!text) return;
+        const translations = azureTranslations(result);
+        const n = ++azureSeq;
+        recordTiming(`seq=${n} azure en->${myHear.value} targets=${Object.keys(translations).join(',') || 'n/a'} total_ms=0`, 0);
+        handleFinal(text, { seq: n, provider: 'azure', translations });
+      };
+      recognizer.canceled = (_s, e) => {
+        const why = String(e?.errorDetails || e?.reason || 'canceled').slice(0, 120);
+        setDiag('azure', t('room.azureError', { why }) || ('Azure interpreter stopped: ' + why), true);
+        azureActive = false;
+      };
+      recognizer.sessionStopped = () => { azureActive = false; };
+      await new Promise((resolve, reject) => {
+        recognizer.startContinuousRecognitionAsync(resolve, reject);
+      });
+    }
+    function stopAzureInterpreter() {
+      const r = azureRecognizer;
+      azureRecognizer = null;
+      azureActive = false;
+      try {
+        r?.stopContinuousRecognitionAsync?.(() => r.close?.(), () => r.close?.());
+      } catch {
+        try { r?.close?.(); } catch { /* stopped */ }
+      }
+    }
     const stopRecStream = () => {
       try { recStream?.getTracks().forEach((tr) => tr.stop()); }
       catch { /* already stopped */ }
@@ -1176,13 +1271,48 @@ export async function render(root, params, ctx) {
       // the only voice listeners hear. call_raw_voice = 'on' reopens it.
       if (source !== 'engine' && rawVoice) syncCallMic(speaking);
     };
+    const azureSetSpeaking = (on, source = 'tap') => {
+      speaking = !!on;
+      paintSpeak();
+      if (speaking) {
+        setDiag('azure', '');
+        startAzureInterpreter().catch((err) => {
+          speaking = false; paintSpeak();
+          micChip.textContent = '🎤 ' + t('room.micBlocked');
+          setDiag('azure', t('room.azureError', {
+            why: String(err?.message || err).slice(0, 80) }) || 'Azure unavailable; using fallback.', true);
+          cloudSetSpeaking(true, source);
+        });
+      } else {
+        stopAzureInterpreter();
+        if (!sessionHeard) setDiag('ears', t('room.earsNoSpeech'), true);
+      }
+      // Booth mode keeps the call microphone closed: the interpreter is
+      // the only voice listeners hear. call_raw_voice = 'on' reopens it.
+      if (source !== 'engine' && rawVoice) syncCallMic(speaking);
+    };
     (async () => {
+      const fns = db().functions;
+      if (!fns || !navigator.mediaDevices) return;
       try {
-        const fns = db().functions;
-        if (!fns || !window.MediaRecorder || !navigator.mediaDevices) return;
+        const { data, error } = await fns.invoke('azure-speech-token', { method: 'GET' });
+        if (!error && data?.configured && data?.token) {
+          setSpeaking = azureSetSpeaking;
+          setDiag('browser', '');
+          setDiag('sr', '');
+          setDiag('capture', '');
+          micChip.textContent = '🎤 ' + t('room.micIdle');
+          speakBtn.title = t('room.azureHint') || 'Azure live interpreter';
+          capFeed.append(el('p', { class: 'muted', style: 'font-size:12px;',
+            text: t('room.azureReady') || 'Azure live interpreter ready: English to French, Portuguese, Arabic and Swahili.' }));
+          return;
+        }
+      } catch { /* Azure unavailable; try old cloud ears */ }
+      try {
+        if (!window.MediaRecorder) return;
         const { data, error } = await fns.invoke('transcribe', { method: 'GET' });
         if (error || !data?.configured) return;
-        // cloud ears ready: every browser can now speak
+        // cloud ears ready: every browser can still speak as fallback
         setSpeaking = cloudSetSpeaking;
         setDiag('browser', '');
         setDiag('sr', '');

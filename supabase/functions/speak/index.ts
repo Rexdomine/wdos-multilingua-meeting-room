@@ -1,33 +1,19 @@
 // ============================================================================
-// WDOS speak — Phase 128 (cloud voice for languages a device cannot speak).
+// WDOS speak — cloud voice fallback for listener devices.
 //
-// Most Windows laptops and Android phones have no Arabic voice installed,
-// so an Arabic listener saw the correct translation on screen and heard
-// nothing. This function turns text into speech with Groq's Orpheus
-// models (Arabic and English) using the SAME free GROQ_API_KEY as the
-// transcribe function, plus a no-secret emergency MP3 fallback for Friday
-// French/Portuguese so audio is not dependent on browser voice packs alone.
-// The room asks for it only when the device itself has no voice for the
-// language; device voices stay first because they are instant and unlimited.
-//
-// Deploy WITHOUT any CLI: Supabase Dashboard → Edge Functions →
-// Deploy a new function → name it exactly  speak  → paste this whole
-// file → Deploy. Leave "Verify JWT" on. No new secret: GROQ_API_KEY is
-// already there from Phase 127.
-//
-// Invocation from the app:
-//   GET  → { configured, langs: ['ar','en','fr','pt'] }
-//   POST { text, lang }  → audio/wav bytes (or JSON error)
-// Errors: 401 not signed in · 400 bad input · 502 speak_failed ·
-//         503 not_configured
-// Note: the English model may ask you to accept its terms once in the
-// Groq Playground (console.groq.com/playground, model
-// canopylabs/orpheus-v1-english). English devices normally have their
-// own voice, so this only matters if you want the cloud English voice.
+// Primary path now uses Azure Speech TTS so Friday languages do not depend on
+// browser-installed voices: fr-FR, pt-BR, ar-SA, sw-KE. Groq/Google fallbacks
+// remain for resilience while Azure rolls out.
 // ============================================================================
+
+export {};
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
+
+const AZURE_KEY = (Deno.env.get("AZURE_SPEECH_KEY") || "").trim();
+const AZURE_REGION = (Deno.env.get("AZURE_SPEECH_REGION") || "").trim();
+const AZURE_ENDPOINT = (Deno.env.get("AZURE_SPEECH_ENDPOINT") || "").trim();
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -43,18 +29,21 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-// Language → Groq model + a clear female voice (WODDI is a women's
-// organisation; change the voice names here if a different one suits).
+const AZURE_VOICES: Record<string, { locale: string; voice: string }> = {
+  fr: { locale: "fr-FR", voice: "fr-FR-DeniseNeural" },
+  pt: { locale: "pt-BR", voice: "pt-BR-FranciscaNeural" },
+  ar: { locale: "ar-SA", voice: "ar-SA-ZariyahNeural" },
+  sw: { locale: "sw-KE", voice: "sw-KE-ZuriNeural" },
+};
+
 const GROQ_VOICES: Record<string, { model: string; voice: string }> = {
   ar: { model: "canopylabs/orpheus-arabic-saudi", voice: "noura" },
   en: { model: "canopylabs/orpheus-v1-english", voice: "hannah" },
 };
-// Friday fallback: Google Translate's public TTS endpoint returns MP3 for
-// many languages and needs no browser-installed voice. It is not the final
-// enterprise voice provider, but it removes the immediate FR/PT audio gap.
-const GOOGLE_TTS_LANGS = new Set(["fr", "pt"]);
-const LANGS = [...new Set([...Object.keys(GROQ_VOICES), ...GOOGLE_TTS_LANGS])];
-const MAX_CHARS = 180; // safe for Groq Arabic and Google Translate TTS
+const GOOGLE_TTS_LANGS = new Set(["fr", "pt", "sw"]);
+const LANGS = [...new Set(["en", ...Object.keys(AZURE_VOICES),
+  ...Object.keys(GROQ_VOICES), ...GOOGLE_TTS_LANGS])];
+const MAX_CHARS = 220;
 const GROQ_URL = "https://api.groq.com/openai/v1/audio/speech";
 const GOOGLE_TTS_URL = "https://translate.google.com/translate_tts";
 
@@ -66,18 +55,97 @@ async function whoAmI(userJwt: string): Promise<{ id: string } | null> {
     if (!r.ok) return null;
     const u = await r.json();
     return u?.id ? { id: u.id } : null;
-  } catch {
-    return null;
+  } catch { return null; }
+}
+
+function azureTtsUrl() {
+  if (AZURE_REGION) {
+    return `https://${AZURE_REGION}.tts.speech.microsoft.com/cognitiveservices/v1`;
   }
+  if (AZURE_ENDPOINT) {
+    return AZURE_ENDPOINT.replace(/\/+$/, "") + "/cognitiveservices/v1";
+  }
+  return "";
+}
+
+function escapeXml(s: string) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+}
+
+async function azureSpeak(text: string, lang: string): Promise<Response | null> {
+  const cfg = AZURE_VOICES[lang];
+  const url = azureTtsUrl();
+  if (!cfg || !AZURE_KEY || !url) return null;
+  const ssml = `<speak version='1.0' xml:lang='${cfg.locale}'><voice xml:lang='${cfg.locale}' name='${cfg.voice}'>${escapeXml(text)}</voice></speak>`;
+  const r = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Ocp-Apim-Subscription-Key": AZURE_KEY,
+      "Content-Type": "application/ssml+xml",
+      "X-Microsoft-OutputFormat": "audio-24khz-48kbitrate-mono-mp3",
+      "User-Agent": "WDOS-Azure-Live-Interpreter",
+    },
+    body: ssml,
+  });
+  if (!r.ok) return null;
+  const bytes = new Uint8Array(await r.arrayBuffer());
+  return new Response(bytes, { status: 200, headers: {
+    ...CORS,
+    "Content-Type": "audio/mpeg",
+    "Cache-Control": "no-store",
+    "X-WDOS-Voice-Provider": "azure_speech_tts",
+  } });
+}
+
+async function googleSpeak(text: string, lang: string): Promise<Response | null> {
+  if (!GOOGLE_TTS_LANGS.has(lang)) return null;
+  const url = new URL(GOOGLE_TTS_URL);
+  url.searchParams.set("ie", "UTF-8");
+  url.searchParams.set("client", "tw-ob");
+  url.searchParams.set("tl", lang);
+  url.searchParams.set("q", text);
+  const r = await fetch(url, { headers: {
+    "User-Agent": "Mozilla/5.0 WDOS-Friday-Audio-QA",
+    "Referer": "https://translate.google.com/",
+  } });
+  if (!r.ok) return null;
+  const bytes = new Uint8Array(await r.arrayBuffer());
+  return new Response(bytes, { status: 200, headers: {
+    ...CORS,
+    "Content-Type": "audio/mpeg",
+    "Cache-Control": "no-store",
+    "X-WDOS-Voice-Provider": "google_translate_tts",
+  } });
+}
+
+async function groqSpeak(text: string, lang: string): Promise<Response | null> {
+  const key = (Deno.env.get("GROQ_API_KEY") || "").trim();
+  const cfg = GROQ_VOICES[lang];
+  if (!cfg || !key) return null;
+  const r = await fetch(GROQ_URL, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ model: cfg.model, voice: cfg.voice, input: text,
+      response_format: "wav" }),
+  });
+  if (!r.ok) return null;
+  const bytes = new Uint8Array(await r.arrayBuffer());
+  return new Response(bytes, { status: 200, headers: {
+    ...CORS,
+    "Content-Type": "audio/wav",
+    "Cache-Control": "no-store",
+    "X-WDOS-Voice-Provider": "groq_orpheus",
+  } });
 }
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
-
-  const key = (Deno.env.get("GROQ_API_KEY") || "").trim();
   if (req.method === "GET") {
     return json({ configured: true, langs: LANGS,
-      groqConfigured: !!key, fallback: "google_translate_tts" });
+      azureConfigured: !!(AZURE_KEY && azureTtsUrl()),
+      azureVoices: AZURE_VOICES,
+      fallback: "azure_speech_tts" });
   }
   if (req.method !== "POST") return json({ error: "method" }, 405);
 
@@ -93,71 +161,15 @@ Deno.serve(async (req) => {
   const lang = String(body.lang || "").trim().toLowerCase();
   if (!text || !LANGS.includes(lang)) return json({ error: "bad_input" }, 400);
 
-  if (GOOGLE_TTS_LANGS.has(lang)) {
-    try {
-      const url = new URL(GOOGLE_TTS_URL);
-      url.searchParams.set("ie", "UTF-8");
-      url.searchParams.set("client", "tw-ob");
-      url.searchParams.set("tl", lang);
-      url.searchParams.set("q", text);
-      const r = await fetch(url, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 WDOS-Friday-Audio-QA",
-          "Referer": "https://translate.google.com/",
-        },
-      });
-      if (!r.ok) {
-        const detail = (await r.text()).slice(0, 300);
-        return json({ error: "speak_failed", provider: "google_translate_tts",
-          status: r.status, detail }, 502);
-      }
-      const bytes = new Uint8Array(await r.arrayBuffer());
-      return new Response(bytes, {
-        status: 200,
-        headers: {
-          ...CORS,
-          "Content-Type": "audio/mpeg",
-          "Cache-Control": "no-store",
-          "X-WDOS-Voice-Provider": "google_translate_tts",
-        },
-      });
-    } catch (e) {
-      return json({ error: "speak_failed", provider: "google_translate_tts",
-        detail: String(e).slice(0, 300) }, 502);
-    }
-  }
-
-  const cfg = GROQ_VOICES[lang];
-  if (!cfg) return json({ error: "bad_input" }, 400);
-  if (!key) return json({ error: "not_configured", missing: ["GROQ_API_KEY"] }, 503);
-
   try {
-    const r = await fetch(GROQ_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: cfg.model,
-        voice: cfg.voice,
-        input: text,
-        response_format: "wav",
-      }),
-    });
-    if (!r.ok) {
-      const detail = (await r.text()).slice(0, 300);
-      return json({ error: "speak_failed", status: r.status, detail }, 502);
-    }
-    const bytes = new Uint8Array(await r.arrayBuffer());
-    return new Response(bytes, {
-      status: 200,
-      headers: {
-        ...CORS,
-        "Content-Type": "audio/wav",
-        "Cache-Control": "no-store",
-      },
-    });
+    const azure = await azureSpeak(text, lang);
+    if (azure) return azure;
+    const google = await googleSpeak(text, lang);
+    if (google) return google;
+    const groq = await groqSpeak(text, lang);
+    if (groq) return groq;
+    return json({ error: "not_configured", lang,
+      missing: ["AZURE_SPEECH_KEY or provider voice"] }, 503);
   } catch (e) {
     return json({ error: "speak_failed", detail: String(e).slice(0, 300) }, 502);
   }
