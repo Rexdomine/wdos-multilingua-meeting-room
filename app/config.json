@@ -1,0 +1,7 @@
+{
+  "supabaseUrl": "https://vhudbuprjpsyizporkcn.supabase.co",
+  "supabaseAnonKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZodWRidXByanBzeWl6cG9ya2NuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQyNzA1ODIsImV4cCI6MjA5OTg0NjU4Mn0.tc0exijzOLOoltFrLK3MIYaymB5Ipp3ZhF1S5LsXEAA",
+  "defaultLocale": "en",
+  "appName": "WDOS",
+  "environment": "production"
+}

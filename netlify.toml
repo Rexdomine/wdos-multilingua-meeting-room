@@ -1,0 +1,10 @@
+[build]
+  publish = "app"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = 'camera=(self "https://meet.jit.si"), microphone=(self "https://meet.jit.si"), display-capture=(self "https://meet.jit.si"), geolocation=()'
+    Content-Security-Policy = "default-src 'self'; frame-ancestors 'self' https://woddiinstitute.com https://*.woddiinstitute.com https://thewoddi.org https://*.thewoddi.org; connect-src 'self' https://*.supabase.co wss://*.supabase.co https://api.mymemory.translated.net https://api-inference.huggingface.co https://router.huggingface.co https://huggingface.co https://*.hf.space; img-src 'self' data: https://*.supabase.co; media-src 'self' blob: data: https://*.supabase.co https://*.hf.space; frame-src https://*.supabase.co https://meet.jit.si https://meet.ffmuc.net https://drive.google.com; style-src 'self' 'unsafe-inline'; script-src 'self' https://meet.jit.si https://meet.ffmuc.net"
