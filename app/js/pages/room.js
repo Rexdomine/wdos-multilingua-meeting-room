@@ -782,22 +782,40 @@ export async function render(root, params, ctx) {
             p: PROTOCOL_VERSION } })).catch(() => {});
       } catch { /* realtime is optional */ }
     };
+    const peerVersions = new Map();
+    const refreshVersionWarning = () => {
+      const now = Date.now();
+      const activePeers = [...peerVersions.values()].filter((peer) =>
+        now - peer.at < 45000);
+      const oldPeer = activePeers.find((peer) => !peer.v);
+      if (oldPeer) {
+        versionChip.textContent = t('room.buildUnknownShort',
+          { name: oldPeer.name });
+        versionChip.style.color = 'var(--magenta)';
+        setDiag('version', t('room.buildUnknown',
+          { name: oldPeer.name, mine: APP_VERSION }), true);
+        return;
+      }
+      const skewPeer = activePeers.find((peer) => String(peer.v) !== APP_VERSION);
+      if (skewPeer) {
+        versionChip.textContent = t('room.buildSkewShort',
+          { name: skewPeer.name, theirs: skewPeer.v });
+        versionChip.style.color = 'var(--magenta)';
+        setDiag('version', t('room.buildSkew',
+          { name: skewPeer.name, mine: APP_VERSION, theirs: skewPeer.v }), true);
+        return;
+      }
+      versionChip.textContent = t('room.buildOk', { v: APP_VERSION });
+      versionChip.style.color = '';
+      setDiag('version');
+    };
     const notePeerVersion = (pl) => {
       if (!pl) return;
       const who = String(pl.name || t('room.someone')).slice(0, 40);
-      if (!pl.v) {
-        versionChip.textContent = t('room.buildUnknownShort', { name: who });
-        versionChip.style.color = 'var(--magenta)';
-        setDiag('version', t('room.buildUnknown',
-          { name: who, mine: APP_VERSION }), true);
-        return;
-      }
-      if (String(pl.v) === APP_VERSION) return;
-      versionChip.textContent = t('room.buildSkewShort',
-        { name: who, theirs: pl.v });
-      versionChip.style.color = 'var(--magenta)';
-      setDiag('version', t('room.buildSkew',
-        { name: who, mine: APP_VERSION, theirs: pl.v }), true);
+      const id = String(pl.id || who);
+      peerVersions.set(id, { name: who, v: pl.v ? String(pl.v) : '',
+        at: Date.now() });
+      refreshVersionWarning();
     };
     const announceHello = (event = 'hello') =>
       sendBroadcast(event, { name: myName });
