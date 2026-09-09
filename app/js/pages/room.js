@@ -309,6 +309,13 @@ export async function render(root, params, ctx) {
     let showAudioUnlock = () => {};
     let voiceAbort = null;
     let voiceSeq = 0;
+    const withTimeout = (promise, ms, label = 'timeout') => {
+      let timer;
+      const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(label)), ms);
+      });
+      return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+    };
     const cancelVoice = () => {
       voiceSeq += 1;
       try { voiceAbort?.abort(); } catch { /* already closed */ }
@@ -492,22 +499,23 @@ export async function render(root, params, ctx) {
           try {
             await primeAudio();
             const to = myHear.value;
-            const sample = await lingua.translate(
-              'The WODDI interpreter is working.', 'en', to);
+            const sample = await withTimeout(lingua.translate(
+              'The WODDI interpreter is working.', 'en', to),
+              12000, 'translate-test-timeout');
             if (started.seq !== voiceSeq || started.signal.aborted) return;
             capFeed.append(el('p', { class: 'muted',
               style: 'margin:2px 0;font-size:13px;',
               text: `🔈 ${sample}` }));
             noteTranslateFallback('The WODDI interpreter is working.',
               sample, 'en', to);
-            const mode = await speakOut(sample, to, {
+            const mode = await withTimeout(speakOut(sample, to, {
               signal: started.signal,
               onBlockedUrl: (u) => {
                 const b = el('button', { class: 'btn btn--quiet',
                   text: '▶ ' + t('room.tapPlay') });
                 b.onclick = () => { new Audio(u).play(); b.remove(); };
                 capFeed.append(b);
-              } });
+              } }), 18000, 'audio-test-timeout');
             if (started.seq === voiceSeq && ['blocked', 'off'].includes(mode)) {
               toastError(t('room.noVoiceFor'));
             }

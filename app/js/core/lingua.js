@@ -14,9 +14,18 @@ export const SPACE_LANG = { ha: 'hau', yo: 'yor', ig: 'ibo', sw: 'swh',
 const VOICE_WAIT_MS = 1200;
 const SPEECH_CHUNK_CHARS = 180;
 const CLOUD_FIRST_LANGS = new Set(['fr', 'pt', 'ar', 'sw']);
+const CLOUD_SPEAK_TIMEOUT_MS = 12000;
 
 export function estimateSpeakMs(text) {
   return Math.min(1500 + String(text || '').length * 90, 30000);
+}
+
+function withTimeout(promise, ms, label = 'timeout') {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(label)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 function resumeSynth() {
@@ -237,8 +246,8 @@ export function createLingua() {
   async function cloudSpeakBlob(text, lang) {
     const k = `${lang}|${text}`;
     if (cloudAudio.has(k)) return cloudAudio.get(k);
-    const { data, error } = await db().functions.invoke('speak',
-      { body: { text, lang } });
+    const { data, error } = await withTimeout(db().functions.invoke('speak',
+      { body: { text, lang } }), CLOUD_SPEAK_TIMEOUT_MS, 'cloud-speak-timeout');
     if (error) throw error;
     const blob = data instanceof Blob ? data
       : new Blob([data], { type: 'audio/wav' });
@@ -373,11 +382,11 @@ export function createLingua() {
             onBlockedUrl?.(url);
             return 'blocked';
           }
-          await new Promise((r) => {
+          await withTimeout(new Promise((r) => {
             finishAudio = r;
             audio.onended = r;
             audio.onerror = r;
-          });
+          }), Math.max(2500, estimateSpeakMs(part) + 3000), 'audio-ended-timeout');
           signal?.removeEventListener?.('abort', cancel);
           if (aborted(signal)) return 'cancelled';
           URL.revokeObjectURL(url);
@@ -413,11 +422,11 @@ export function createLingua() {
           onBlockedUrl?.(url);
           return 'blocked';
         }
-        await new Promise((r) => {
+        await withTimeout(new Promise((r) => {
           finishAudio = r;
           audio.onended = r;
           audio.onerror = r;
-        });
+        }), Math.max(2500, estimateSpeakMs(text) + 3000), 'audio-ended-timeout');
         signal?.removeEventListener?.('abort', cancel);
         if (aborted(signal)) return 'cancelled';
         status.voice = 'ai';

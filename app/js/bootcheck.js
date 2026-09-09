@@ -31,7 +31,7 @@
   } catch (e) { say('caches: n/a'); }
   say('');
   say('READ IT LIKE THIS:');
-  say('- index.html should show [WDOS build v68.14-audio-cancel-rootfix] → server is current.');
+  say('- index.html should show [WDOS build v68.15-audio-timeout-rootfix] → server is current.');
   say('- If it shows an older build or FAIL → the deploy did not reach');
   say('  THIS site; drag the folder to the site owning ' + location.host + '.');
   say('- If server is current but the app is blank → press Repair below.');
