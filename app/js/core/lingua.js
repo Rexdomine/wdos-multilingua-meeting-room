@@ -285,11 +285,17 @@ export function createLingua() {
     return { mode: 'off', detail: status.voiceDetail };
   }
 
-  async function speakDevice(text, lang, voice) {
+  const aborted = (signal) => !!signal?.aborted;
+  function throwIfAborted(signal) {
+    if (aborted(signal)) throw new DOMException('cancelled', 'AbortError');
+  }
+
+  async function speakDevice(text, lang, voice, signal) {
     const chunks = speechChunks(text);
     if (!chunks.length) return;
     const sy = window.speechSynthesis;
     for (const part of chunks) {
+      throwIfAborted(signal);
       resumeSynth();
       const u = new SpeechSynthesisUtterance(part);
       u.voice = voice; u.lang = voice.lang || lang;
@@ -303,6 +309,11 @@ export function createLingua() {
         };
         u.onend = finish;
         u.onerror = () => { failed = true; finish(); };
+        const cancel = () => {
+          try { sy.cancel(); } catch { /* optional */ }
+          finish();
+        };
+        signal?.addEventListener?.('abort', cancel, { once: true });
         try {
           sy.speak(u);
           setTimeout(resumeSynth, 40);
@@ -312,21 +323,26 @@ export function createLingua() {
         }
         setTimeout(finish, estimateSpeakMs(part) + 1000);
       });
+      throwIfAborted(signal);
       if (failed) throw new Error('speech blocked');
       await new Promise((r) => setTimeout(r, 60));
     }
   }
 
-  async function doSpeak(text, lang, { onBlockedUrl, beforeStart } = {}) {
+  async function doSpeak(text, lang, { onBlockedUrl, beforeStart, signal } = {}) {
+    if (aborted(signal)) return 'cancelled';
     const info = await voiceStatus(lang);
+    if (aborted(signal)) return 'cancelled';
     if (info.mode === 'device') {
       try {
+        if (aborted(signal)) return 'cancelled';
         await beforeStart?.();
-        await speakDevice(text, lang, info.voice);
+        await speakDevice(text, lang, info.voice, signal);
         status.voice = 'device';
         status.voiceDetail = info.detail;
         return 'device';
-      } catch {
+      } catch (e) {
+        if (e?.name === 'AbortError' || aborted(signal)) return 'cancelled';
         status.voice = 'blocked';
         status.voiceDetail = 'Browser speech engine refused playback';
         return 'blocked';
@@ -335,26 +351,42 @@ export function createLingua() {
     if (info.mode === 'cloud') {
       try {
         const parts = speechChunks(text);
+        if (aborted(signal)) return 'cancelled';
         await beforeStart?.();
         for (const part of parts) {
+          if (aborted(signal)) return 'cancelled';
           const blob = await cloudSpeakBlob(part, lang);
+          if (aborted(signal)) return 'cancelled';
           const url = URL.createObjectURL(blob);
           const audio = new Audio(url);
+          let finishAudio = () => {};
+          const cancel = () => {
+            try { audio.pause(); audio.currentTime = 0; } catch { /* optional */ }
+            URL.revokeObjectURL(url);
+            finishAudio();
+          };
+          signal?.addEventListener?.('abort', cancel, { once: true });
           try { await audio.play(); }
           catch {
-            URL.revokeObjectURL(url);
             status.voice = 'blocked';
             status.voiceDetail = 'Tap required to start generated audio';
             onBlockedUrl?.(url);
             return 'blocked';
           }
-          await new Promise((r) => { audio.onended = r; audio.onerror = r; });
+          await new Promise((r) => {
+            finishAudio = r;
+            audio.onended = r;
+            audio.onerror = r;
+          });
+          signal?.removeEventListener?.('abort', cancel);
+          if (aborted(signal)) return 'cancelled';
           URL.revokeObjectURL(url);
         }
         status.voice = 'cloud';
         status.voiceDetail = info.detail;
         return 'cloud';
-      } catch {
+      } catch (e) {
+        if (e?.name === 'AbortError' || aborted(signal)) return 'cancelled';
         status.voice = 'off';
         status.voiceDetail = 'WODDI cloud voice did not answer';
         return 'off';
@@ -362,10 +394,18 @@ export function createLingua() {
     }
     if (info.mode === 'ai') {
       try {
+        if (aborted(signal)) return 'cancelled';
         const url = await spaceSpeakTest(info.space, text, info.lang3,
           () => {}, { patience: 15000 });
+        if (aborted(signal)) return 'cancelled';
         const audio = new Audio(url);
         await beforeStart?.();
+        let finishAudio = () => {};
+        const cancel = () => {
+          try { audio.pause(); audio.currentTime = 0; } catch { /* optional */ }
+          finishAudio();
+        };
+        signal?.addEventListener?.('abort', cancel, { once: true });
         try { await audio.play(); }
         catch {
           status.voice = 'blocked';
@@ -373,11 +413,18 @@ export function createLingua() {
           onBlockedUrl?.(url);
           return 'blocked';
         }
-        await new Promise((r) => { audio.onended = r; audio.onerror = r; });
+        await new Promise((r) => {
+          finishAudio = r;
+          audio.onended = r;
+          audio.onerror = r;
+        });
+        signal?.removeEventListener?.('abort', cancel);
+        if (aborted(signal)) return 'cancelled';
         status.voice = 'ai';
         status.voiceDetail = info.detail;
         return 'ai';
-      } catch {
+      } catch (e) {
+        if (e?.name === 'AbortError' || aborted(signal)) return 'cancelled';
         status.voice = 'off';
         status.voiceDetail = 'WODDI voice Space did not return playable audio';
         return 'off';

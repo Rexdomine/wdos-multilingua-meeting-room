@@ -307,6 +307,19 @@ export async function render(root, params, ctx) {
       type: 'button' });
     let audioUnlocked = false;
     let showAudioUnlock = () => {};
+    let voiceAbort = null;
+    let voiceSeq = 0;
+    const cancelVoice = () => {
+      voiceSeq += 1;
+      try { voiceAbort?.abort(); } catch { /* already closed */ }
+      voiceAbort = null;
+      try { window.speechSynthesis?.cancel?.(); } catch { /* optional */ }
+    };
+    const nextVoiceSignal = () => {
+      cancelVoice();
+      voiceAbort = new AbortController();
+      return { seq: voiceSeq, signal: voiceAbort.signal };
+    };
     const primeAudio = async () => {
       try {
         const a = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQQAAAAAAA==');
@@ -333,8 +346,13 @@ export async function render(root, params, ctx) {
     audioToggle.onclick = async () => {
       liveAudioOn = !liveAudioOn;
       localStorage.setItem('wdos.room.liveAudio', liveAudioOn ? 'on' : 'off');
-      if (liveAudioOn) await primeAudio();
       paintAudioToggle();
+      if (!liveAudioOn) {
+        cancelVoice();
+        setDiag('voice', '');
+      } else {
+        primeAudio().then(() => diagnoseVoiceLane()).catch(() => {});
+      }
       toast(liveAudioOn ? 'Live translated audio ON' : 'Live translated audio OFF');
     };
     paintAudioToggle();
@@ -461,28 +479,51 @@ export async function render(root, params, ctx) {
       el('span', { class: 'muted', style: 'font-size:12px;',
         text: t('room.iHear') }), myHear,
       invite,
-      el('button', { class: 'btn btn--secondary', title: t('room.voiceTest'),
-        text: 'Test audio', onclick: async () => {
-          await primeAudio();
-          const to = myHear.value;
-          const sample = await lingua.translate(
-            'The WODDI interpreter is working.', 'en', to);
-          capFeed.append(el('p', { class: 'muted',
-            style: 'margin:2px 0;font-size:13px;',
-            text: `🔈 ${sample}` }));
-          noteTranslateFallback('The WODDI interpreter is working.',
-            sample, 'en', to);
-          const mode = await speakOut(sample, to, {
-            onBlockedUrl: (u) => {
-              const b = el('button', { class: 'btn btn--quiet',
-                text: '▶ ' + t('room.tapPlay') });
-              b.onclick = () => { new Audio(u).play(); b.remove(); };
-              capFeed.append(b);
-            } });
-          if (['blocked', 'off'].includes(mode)) toastError(t('room.noVoiceFor'));
-          diagnoseVoiceLane();
-          paintChips();
-        } }),
+      (() => {
+        const testBtn = el('button', { class: 'btn btn--secondary',
+          title: t('room.voiceTest'), text: 'Test audio' });
+        testBtn.onclick = async () => {
+          const started = nextVoiceSignal();
+          liveAudioOn = true;
+          localStorage.setItem('wdos.room.liveAudio', 'on');
+          paintAudioToggle();
+          testBtn.disabled = true;
+          testBtn.textContent = 'Testing…';
+          try {
+            await primeAudio();
+            const to = myHear.value;
+            const sample = await lingua.translate(
+              'The WODDI interpreter is working.', 'en', to);
+            if (started.seq !== voiceSeq || started.signal.aborted) return;
+            capFeed.append(el('p', { class: 'muted',
+              style: 'margin:2px 0;font-size:13px;',
+              text: `🔈 ${sample}` }));
+            noteTranslateFallback('The WODDI interpreter is working.',
+              sample, 'en', to);
+            const mode = await speakOut(sample, to, {
+              signal: started.signal,
+              onBlockedUrl: (u) => {
+                const b = el('button', { class: 'btn btn--quiet',
+                  text: '▶ ' + t('room.tapPlay') });
+                b.onclick = () => { new Audio(u).play(); b.remove(); };
+                capFeed.append(b);
+              } });
+            if (started.seq === voiceSeq && ['blocked', 'off'].includes(mode)) {
+              toastError(t('room.noVoiceFor'));
+            }
+          } catch (e) {
+            if (!started.signal.aborted) toastError(e?.message || t('room.noVoiceFor'));
+          } finally {
+            testBtn.disabled = false;
+            testBtn.textContent = 'Test audio';
+            if (started.seq === voiceSeq) {
+              diagnoseVoiceLane();
+              paintChips();
+            }
+          }
+        };
+        return testBtn;
+      })(),
       audioToggle,
       engineChip, azureChip, transChip, voiceChip, interpretingChip, versionChip,
       el('button', { class: 'btn btn--danger', text: t('room.endCall'),
@@ -801,16 +842,22 @@ export async function render(root, params, ctx) {
       const spoken = String(text || '').trim();
       if (!spoken) return 'off';
       if (!liveAudioOn) return 'muted';
+      const started = opts.signal
+        ? { seq: voiceSeq, signal: opts.signal }
+        : nextVoiceSignal();
       const estMs = lingua.estimateSpeakMs
         ? lingua.estimateSpeakMs(spoken) : Math.min(1500 + spoken.length * 90, 30000);
       const mode = await lingua.speak(spoken, lang, {
         onBlockedUrl: opts.onBlockedUrl || showAudioUnlock,
+        signal: started.signal,
         beforeStart: async () => {
+          if (started.seq !== voiceSeq || started.signal.aborted || !liveAudioOn) return;
           announceTts(spoken, lang, estMs);
           holdMicFor(TTS_LEAD_MS + estMs + TTS_TAIL_MS);
           await wait(TTS_LEAD_MS);
         },
       });
+      if (started.seq !== voiceSeq || mode === 'cancelled' || !liveAudioOn) return 'muted';
       if (mode === 'off') {
         setDiag('voice', t('room.noVoiceDevice',
           { lang: langName(lang) }), true);
