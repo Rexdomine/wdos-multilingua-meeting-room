@@ -325,10 +325,11 @@ export async function render(root, params, ctx) {
       paintAudioQueue();
     };
     playQueuedAudio.onclick = async () => {
-      const jobs = audioQueue.splice(0, audioQueue.length);
       paintAudioQueue();
       setDiag('voice', '');
-      for (const url of jobs) {
+      while (audioQueue.length) {
+        const url = audioQueue.shift();
+        paintAudioQueue();
         try {
           const audio = new Audio(url);
           await audio.play();
@@ -336,6 +337,7 @@ export async function render(root, params, ctx) {
             audio.onended = resolve;
             audio.onerror = resolve;
           }), 18000, 'queued-audio-timeout');
+          try { URL.revokeObjectURL(url); } catch { /* optional */ }
         } catch {
           audioQueue.unshift(url);
           setDiag('voice', t('room.voiceBlocked'), true);
@@ -575,7 +577,10 @@ export async function render(root, params, ctx) {
     ]);
     const capFeed = el('div', { class: 'room-caps mt-2' });
     showAudioUnlock = (url) => {
-      if (url) queueBlockedAudio(url);
+      if (url) {
+        queueBlockedAudio(url);
+        return;
+      }
       const b = el('button', { class: 'btn btn--primary mt-2',
         text: '▶ Enable live audio' });
       b.onclick = async () => {
