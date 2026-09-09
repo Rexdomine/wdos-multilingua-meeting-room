@@ -738,6 +738,35 @@ export async function render(root, params, ctx) {
     };
     channel = db().channel(`cap-${room}`,
       { config: { broadcast: { self: false } } });
+    const liveCaps = new Map();
+    const liveCapKey = (pl = {}) => `${pl.id || pl.name || 'peer'}:${pl.seq || 'live'}`;
+    const removeLiveCap = (key) => {
+      const node = liveCaps.get(key);
+      if (node?.parentNode) node.parentNode.removeChild(node);
+      liveCaps.delete(key);
+    };
+    const upsertLiveCap = (key, name, text, lang) => {
+      const shown = String(text || '').trim();
+      if (!shown) return;
+      let node = liveCaps.get(key);
+      if (!node) {
+        node = document.createElement('p');
+        node.className = 'muted';
+        node.style.margin = '2px 0';
+        node.style.fontSize = '14px';
+        node.style.opacity = '0.78';
+        const who = document.createElement('strong');
+        who.textContent = `${name || t('room.someone')} live: `;
+        const span = document.createElement('span');
+        node.append(who, span);
+        capFeed.append(node);
+        liveCaps.set(key, node);
+      }
+      node.dir = lang === 'ar' ? 'rtl' : 'auto';
+      const span = node.querySelector('span');
+      if (span) span.textContent = shown;
+      capFeed.scrollTop = capFeed.scrollHeight;
+    };
     channel.on('broadcast', { event: 'tts' }, ({ payload: pl }) => {
       notePeerVersion(pl);
       if (pl?.text) rememberEcho(pl.text, pl.lang || '');
@@ -761,6 +790,15 @@ export async function render(root, params, ctx) {
       notePeerVersion(pl);
       const to = myHear.value;
       const from = pl.lang || 'en';
+      if (pl.partial) {
+        const shown = String(pl.translations?.[to] || pl.text || '').trim();
+        if (shown) {
+          upsertLiveCap(liveCapKey(pl), pl.name, shown, to);
+          recordTiming(`seq=${pl.seq || 'live'} partial ${from}->${to} total_ms=0`, 0);
+        }
+        return;
+      }
+      removeLiveCap(liveCapKey({ ...pl, seq: 'live' }));
       const translateStart = performance.now();
       let shown = String(pl.translations?.[to] || '').trim();
       if (!shown) shown = await lingua.translate(pl.text, from, to);
@@ -1029,10 +1067,13 @@ export async function render(root, params, ctx) {
       speechConfig.speechRecognitionLanguage = 'en-US';
       for (const lang of AZURE_TARGETS) speechConfig.addTargetLanguage(lang);
       if (SDK.PropertyId?.SpeechServiceConnection_InitialSilenceTimeoutMs) {
-        speechConfig.setProperty(SDK.PropertyId.SpeechServiceConnection_InitialSilenceTimeoutMs, '2000');
+        speechConfig.setProperty(SDK.PropertyId.SpeechServiceConnection_InitialSilenceTimeoutMs, '1500');
       }
       if (SDK.PropertyId?.Speech_SegmentationSilenceTimeoutMs) {
-        speechConfig.setProperty(SDK.PropertyId.Speech_SegmentationSilenceTimeoutMs, '350');
+        speechConfig.setProperty(SDK.PropertyId.Speech_SegmentationSilenceTimeoutMs, '250');
+      }
+      if (SDK.PropertyId?.SpeechServiceResponse_StablePartialResultThreshold) {
+        speechConfig.setProperty(SDK.PropertyId.SpeechServiceResponse_StablePartialResultThreshold, '2');
       }
       const audioConfig = SDK.AudioConfig.fromDefaultMicrophoneInput();
       const recognizer = new SDK.TranslationRecognizer(speechConfig, audioConfig);
@@ -1043,15 +1084,29 @@ export async function render(root, params, ctx) {
       sessionHeard = true;
       micChip.textContent = '🎤 Azure live';
       setDiag('ears', t('room.azureReady') || 'Azure live interpreter is streaming.');
+      let lastAzurePartial = ''; let lastAzurePartialAt = 0;
       recognizer.recognizing = (_s, e) => {
+        const result = e?.result;
         const heard = String(e?.result?.text || '').trim();
         if (heard && speaking) micChip.textContent = '🎤 Azure hearing ' + heard.slice(-48);
+        if (!speaking || !result) return;
+        const translations = azureTranslations(result);
+        const localShown = String(translations[myHear.value] || heard || '').trim();
+        const now = performance.now();
+        if (localShown) upsertLiveCap(`${peerId}:live`, myName, localShown, myHear.value);
+        const sig = `${heard}|${Object.values(translations).join('|')}`;
+        if (!heard || sig === lastAzurePartial || now - lastAzurePartialAt < 120) return;
+        lastAzurePartial = sig; lastAzurePartialAt = now;
+        sendBroadcast('cap', { seq: 'live', partial: true, text: heard,
+          lang: mySpeak.value, name: myName, timing: { partial: true },
+          translations, provider: 'azure' });
       };
       recognizer.recognized = (_s, e) => {
         const result = e?.result;
         if (!result || result.reason !== SDK.ResultReason.TranslatedSpeech) return;
         const text = String(result.text || '').trim();
         if (!text) return;
+        removeLiveCap(`${peerId}:live`);
         const translations = azureTranslations(result);
         const n = ++azureSeq;
         recordTiming(`seq=${n} azure en->${myHear.value} targets=${Object.keys(translations).join(',') || 'n/a'} total_ms=0`, 0);
