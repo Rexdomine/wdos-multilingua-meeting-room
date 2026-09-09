@@ -38,20 +38,49 @@ function loadCallLib(domain, src = `https://${domain}/external_api.js`) {
   return libLoaded.get(src);
 }
 
-function loadAzureSpeechSdk() {
-  const src = 'https://aka.ms/csspeech/jsbrowserpackageraw';
+function loadScriptOnce(src, timeoutMs, label) {
   if (window.SpeechSDK) return Promise.resolve(window.SpeechSDK);
   if (!libLoaded.has(src)) {
     libLoaded.set(src, new Promise((res, rej) => {
+      let done = false;
+      const finish = (fn, value) => {
+        if (done) return;
+        done = true;
+        fn(value);
+      };
       const sc = document.createElement('script');
       sc.src = src;
-      sc.onload = () => window.SpeechSDK ? res(window.SpeechSDK) : rej(new Error('azure-sdk'));
-      sc.onerror = () => { libLoaded.delete(src); rej(new Error('azure-sdk-load')); };
+      sc.async = true;
+      sc.onload = () => window.SpeechSDK
+        ? finish(res, window.SpeechSDK)
+        : finish(rej, new Error(label + '-empty'));
+      sc.onerror = () => {
+        libLoaded.delete(src);
+        finish(rej, new Error(label + '-load'));
+      };
       document.head.append(sc);
-      setTimeout(() => { libLoaded.delete(src); rej(new Error('azure-sdk-timeout')); }, 15000);
+      setTimeout(() => {
+        libLoaded.delete(src);
+        finish(rej, new Error(label + '-timeout'));
+      }, timeoutMs);
     }));
   }
   return libLoaded.get(src);
+}
+
+async function loadAzureSpeechSdk() {
+  if (window.SpeechSDK) return window.SpeechSDK;
+  const sources = [
+    ['/assets/vendor/azure-speech/microsoft.cognitiveservices.speech.sdk.bundle-min.js', 30000, 'azure-sdk-local'],
+    ['https://cdn.jsdelivr.net/npm/microsoft-cognitiveservices-speech-sdk@1.48.0/distrib/browser/microsoft.cognitiveservices.speech.sdk.bundle-min.js', 30000, 'azure-sdk-jsdelivr'],
+    ['https://aka.ms/csspeech/jsbrowserpackageraw', 20000, 'azure-sdk-aka'],
+  ];
+  const errors = [];
+  for (const [src, timeoutMs, label] of sources) {
+    try { return await loadScriptOnce(src, timeoutMs, label); }
+    catch (e) { errors.push(String(e?.message || e)); }
+  }
+  throw new Error(errors.join(' > ') || 'azure-sdk-unavailable');
 }
 
 // Asks the meeting-token Edge Function for a personal token for this room.

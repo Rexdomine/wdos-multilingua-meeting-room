@@ -17,7 +17,7 @@
  * VERSION is bumped with every release; old caches are removed on
  * activation.
  */
-const VERSION = 'wdos-v68.10';
+const VERSION = 'wdos-v68.11';
 const STATIC_CACHE = `${VERSION}-static`;
 const DATA_CACHE = 'wdos-data';   // stable name: app.js deletes it on sign-out
 
