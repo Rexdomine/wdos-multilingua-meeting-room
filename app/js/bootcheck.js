@@ -5,6 +5,8 @@
   say('time:   ' + new Date().toString());
   say('');
   var files = ['/index.html', '/sw.js', '/js/app.js', '/js/core/db.js',
+               '/js/core/lingua.js', '/js/pages/room.js',
+               '/assets/vendor/azure-speech/microsoft.cognitiveservices.speech.sdk.bundle-min.js',
                '/config.json', '/locales/en.json', '/assets/vendor/supabase.js'];
   for (var i = 0; i < files.length; i++) {
     var f = files[i];
@@ -12,7 +14,7 @@
       var r = await fetch(f + '?bc=' + Date.now(), { cache: 'no-store' });
       var txt = await r.text();
       var mark = '';
-      var m = txt.match(/WDOS build v[\d.]+|wdos-v[\d.]+|APP_VERSION = '[\d.]+'/);
+      var m = txt.match(/WDOS build v[\w.-]+|wdos-v[\w.-]+|APP_VERSION = '[\w.-]+'/);
       if (m) mark = '   [' + m[0] + ']';
       say((r.ok ? 'OK  ' : 'FAIL') + ' ' + f + '  (' + r.status + ', '
           + txt.length + ' bytes)' + mark);
@@ -29,7 +31,7 @@
   } catch (e) { say('caches: n/a'); }
   say('');
   say('READ IT LIKE THIS:');
-  say('- index.html should show [WDOS build v53.1] → server is current.');
+  say('- index.html should show [WDOS build v68.12-cache-bust-azure-audio] → server is current.');
   say('- If it shows an older build or FAIL → the deploy did not reach');
   say('  THIS site; drag the folder to the site owning ' + location.host + '.');
   say('- If server is current but the app is blank → press Repair below.');

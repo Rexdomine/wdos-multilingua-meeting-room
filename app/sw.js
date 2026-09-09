@@ -17,7 +17,7 @@
  * VERSION is bumped with every release; old caches are removed on
  * activation.
  */
-const VERSION = 'wdos-v68.11';
+const VERSION = 'wdos-v68.12';
 const STATIC_CACHE = `${VERSION}-static`;
 const DATA_CACHE = 'wdos-data';   // stable name: app.js deletes it on sign-out
 
@@ -77,7 +77,7 @@ self.addEventListener('fetch', (event) => {
 async function networkFirst(req, cacheName, fallbackPath) {
   const cache = await caches.open(cacheName);
   try {
-    const res = await fetch(req);
+    const res = await fetch(new Request(req, { cache: 'reload' }));
     if (res && res.ok) cache.put(req, res.clone());
     return res;
   } catch {
@@ -94,7 +94,7 @@ async function networkFirst(req, cacheName, fallbackPath) {
 async function staleWhileRevalidate(req, cacheName) {
   const cache = await caches.open(cacheName);
   const hit = await cache.match(req);
-  const refresh = fetch(req)
+  const refresh = fetch(new Request(req, { cache: 'reload' }))
     .then((res) => {
       if (res && res.ok) cache.put(req, res.clone());
       return res;
