@@ -13,6 +13,7 @@ export const SPACE_LANG = { ha: 'hau', yo: 'yor', ig: 'ibo', sw: 'swh',
 
 const VOICE_WAIT_MS = 1200;
 const SPEECH_CHUNK_CHARS = 180;
+const CLOUD_FIRST_LANGS = new Set(['fr', 'pt', 'ar', 'sw']);
 
 export function estimateSpeakMs(text) {
   return Math.min(1500 + String(text || '').length * 90, 30000);
@@ -247,6 +248,12 @@ export function createLingua() {
   }
 
   async function voiceStatus(lang) {
+    const cl = await cloudVoiceLangs();
+    if (CLOUD_FIRST_LANGS.has(lang) && cl.includes(lang)) {
+      status.voice = 'cloud';
+      status.voiceDetail = 'WODDI cloud voice';
+      return { mode: 'cloud', detail: status.voiceDetail };
+    }
     let v = voiceFor(lang);
     if (!v && 'speechSynthesis' in window
         && (window.speechSynthesis.getVoices?.() || []).length === 0) {
@@ -260,7 +267,6 @@ export function createLingua() {
       status.voiceDetail = `${v.name || 'voice'} (${v.lang || lang})`;
       return { mode: 'device', voice: v, detail: status.voiceDetail };
     }
-    const cl = await cloudVoiceLangs();
     if (cl.includes(lang)) {
       status.voice = 'cloud';
       status.voiceDetail = 'WODDI cloud voice';

@@ -273,6 +273,25 @@ export async function render(root, params, ctx) {
     const myHear = el('select', { class: 'select', style: 'max-width:130px;' },
       LANGS.map(([c, n]) => el('option', { value: c, text: n,
         selected: hearPref === c || null })));
+    let liveAudioOn = localStorage.getItem('wdos.room.liveAudio') !== 'off';
+    const audioToggle = el('button', { class: 'btn btn--secondary',
+      type: 'button' });
+    const paintAudioToggle = () => {
+      audioToggle.textContent = liveAudioOn ? '🔊 Audio ON' : '🔇 Audio OFF';
+      audioToggle.classList.toggle('btn--primary', liveAudioOn);
+      audioToggle.classList.toggle('btn--secondary', !liveAudioOn);
+      audioToggle.setAttribute('aria-pressed', liveAudioOn ? 'true' : 'false');
+      audioToggle.title = liveAudioOn
+        ? 'Live translated audio is ON. Tap to turn it off.'
+        : 'Live translated audio is OFF. Tap to turn it on.';
+    };
+    audioToggle.onclick = () => {
+      liveAudioOn = !liveAudioOn;
+      localStorage.setItem('wdos.room.liveAudio', liveAudioOn ? 'on' : 'off');
+      paintAudioToggle();
+      toast(liveAudioOn ? 'Live translated audio ON' : 'Live translated audio OFF');
+    };
+    paintAudioToggle();
     mySpeak.addEventListener('change', () => remember('speak', mySpeak.value));
     myHear.addEventListener('change', () => remember('hear', myHear.value));
     const langName = (code) =>
@@ -395,7 +414,7 @@ export async function render(root, params, ctx) {
         text: t('room.iHear') }), myHear,
       invite,
       el('button', { class: 'btn btn--secondary', title: t('room.voiceTest'),
-        text: '🔈', onclick: async () => {
+        text: 'Test audio', onclick: async () => {
           const to = myHear.value;
           const sample = await lingua.translate(
             'The WODDI interpreter is working.', 'en', to);
@@ -415,6 +434,7 @@ export async function render(root, params, ctx) {
           diagnoseVoiceLane();
           paintChips();
         } }),
+      audioToggle,
       engineChip, transChip, voiceChip, interpretingChip, versionChip,
       el('button', { class: 'btn btn--danger', text: t('room.endCall'),
         onclick: () => { userEnded = true; stopAll(); lobby(); } }),
@@ -716,6 +736,7 @@ export async function render(root, params, ctx) {
     speakOut = async (text, lang, opts = {}) => {
       const spoken = String(text || '').trim();
       if (!spoken) return 'off';
+      if (!liveAudioOn) return 'muted';
       const estMs = lingua.estimateSpeakMs
         ? lingua.estimateSpeakMs(spoken) : Math.min(1500 + spoken.length * 90, 30000);
       const mode = await lingua.speak(spoken, lang, {
