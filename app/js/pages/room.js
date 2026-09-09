@@ -335,6 +335,8 @@ export async function render(root, params, ctx) {
       text: '🌐 …' });
     const voiceChip = el('span', { class: 'muted', style: chipStyle,
       text: '🔊 …' });
+    const azureChip = el('span', { class: 'muted', style: chipStyle,
+      text: '⚡ Azure starting' });
     const versionChip = el('span', { class: 'muted', style: chipStyle,
       text: t('room.buildOk', { v: APP_VERSION }) });
     const interpretingChip = el('span', { class: 'muted',
@@ -435,7 +437,7 @@ export async function render(root, params, ctx) {
           paintChips();
         } }),
       audioToggle,
-      engineChip, transChip, voiceChip, interpretingChip, versionChip,
+      engineChip, azureChip, transChip, voiceChip, interpretingChip, versionChip,
       el('button', { class: 'btn btn--danger', text: t('room.endCall'),
         onclick: () => { userEnded = true; stopAll(); lobby(); } }),
     ]);
@@ -1103,6 +1105,8 @@ export async function render(root, params, ctx) {
       azureActive = true;
       azureReady = true;
       sessionHeard = true;
+      azureChip.textContent = '⚡ Azure live';
+      azureChip.style.color = 'var(--green, #7CB518)';
       micChip.textContent = '🎤 Azure live';
       setDiag('ears', t('room.azureReady') || 'Azure live interpreter is streaming.');
       let lastAzurePartial = ''; let lastAzurePartialAt = 0;
@@ -1136,9 +1140,17 @@ export async function render(root, params, ctx) {
       recognizer.canceled = (_s, e) => {
         const why = String(e?.errorDetails || e?.reason || 'canceled').slice(0, 120);
         setDiag('azure', t('room.azureError', { why }) || ('Azure interpreter stopped: ' + why), true);
+        azureChip.textContent = '⚠ Azure fallback';
+        azureChip.style.color = 'var(--magenta)';
         azureActive = false;
       };
-      recognizer.sessionStopped = () => { azureActive = false; };
+      recognizer.sessionStopped = () => {
+        azureActive = false;
+        if (!userEnded) {
+          azureChip.textContent = '⚠ Azure stopped';
+          azureChip.style.color = 'var(--magenta)';
+        }
+      };
       await new Promise((resolve, reject) => {
         recognizer.startContinuousRecognitionAsync(resolve, reject);
       });
@@ -1147,6 +1159,8 @@ export async function render(root, params, ctx) {
       const r = azureRecognizer;
       azureRecognizer = null;
       azureActive = false;
+      azureChip.textContent = '⚡ Azure stopped';
+      azureChip.style.color = '';
       try {
         r?.stopContinuousRecognitionAsync?.(() => r.close?.(), () => r.close?.());
       } catch {
