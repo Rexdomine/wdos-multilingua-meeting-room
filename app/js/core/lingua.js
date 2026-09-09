@@ -315,6 +315,47 @@ export function createLingua() {
     if (aborted(signal)) throw new DOMException('cancelled', 'AbortError');
   }
 
+  async function playBlobWithElement(blob, signal) {
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    audio.preload = 'auto';
+    let cleanup = () => {};
+    try {
+      throwIfAborted(signal);
+      const playPromise = audio.play();
+      if (playPromise?.then) await playPromise;
+      throwIfAborted(signal);
+      await new Promise((resolve) => {
+        let done = false;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          cleanup();
+          resolve();
+        };
+        const cancel = () => {
+          try { audio.pause(); audio.currentTime = 0; } catch { /* optional */ }
+          finish();
+        };
+        cleanup = () => {
+          signal?.removeEventListener?.('abort', cancel);
+          audio.onended = null;
+          audio.onerror = null;
+        };
+        signal?.addEventListener?.('abort', cancel, { once: true });
+        audio.onended = finish;
+        audio.onerror = finish;
+        const dur = Number.isFinite(audio.duration) && audio.duration > 0
+          ? audio.duration * 1000 : estimateSpeakMs(' '.repeat(40));
+        setTimeout(finish, Math.max(2500, dur + 3000));
+      });
+      throwIfAborted(signal);
+    } finally {
+      cleanup();
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+    }
+  }
+
   async function playBlobWithContext(blob, signal) {
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) throw new Error('audio-context-unavailable');
@@ -387,6 +428,17 @@ export function createLingua() {
     }
   }
 
+  async function playCloudBlob(blob, signal) {
+    try {
+      await playBlobWithElement(blob, signal);
+      return 'element';
+    } catch (elementErr) {
+      if (elementErr?.name === 'AbortError' || aborted(signal)) throw elementErr;
+      await playBlobWithContext(blob, signal);
+      return 'context';
+    }
+  }
+
   async function doSpeak(text, lang, { onBlockedUrl, beforeStart, signal } = {}) {
     if (aborted(signal)) return 'cancelled';
     const info = await voiceStatus(lang);
@@ -415,7 +467,7 @@ export function createLingua() {
           if (aborted(signal)) return 'cancelled';
           const blob = await cloudSpeakBlob(part, lang);
           if (aborted(signal)) return 'cancelled';
-          try { await playBlobWithContext(blob, signal); }
+          try { await playCloudBlob(blob, signal); }
           catch {
             const url = URL.createObjectURL(blob);
             status.voice = 'blocked';
