@@ -380,7 +380,7 @@ export async function render(root, params, ctx) {
     const invite = el('button', { class: 'btn btn--secondary',
       text: t('room.invite'),
       onclick: async () => {
-        const link = `https://woddicrm.org/#/room?r=${encodeURIComponent(room)}`;
+        const link = `https://wdos-multilingua-meeting-room.vercel.app/#/room?r=${encodeURIComponent(room)}`;
         try { await navigator.clipboard.writeText(link);
           toast(t('room.inviteCopied')); }
         catch { prompt(t('room.invite'), link); }
