@@ -580,8 +580,8 @@ export async function render(root, params, ctx) {
     // tiny warning before audio, waits a short pre-roll, and includes the
     // spoken text so every neighbor can suppress both early and late echoes.
     const PROTOCOL_VERSION = 2;
-    const TTS_LEAD_MS = 700;
-    const TTS_TAIL_MS = 1200;
+    const TTS_LEAD_MS = 150;
+    const TTS_TAIL_MS = 700;
     const REMOTE_TAIL_MS = 900;
     const ECHO_TTL_MS = 30000;
     const ECHO_MAX = 24;
@@ -801,17 +801,22 @@ export async function render(root, params, ctx) {
       capFeed.append(el('p', { class: 'muted',
         style: 'margin:2px 0;font-size:13px;',
         text: `${myName}: ${text}` }));
-      // hear yourself translated — the solo proof and the demo trick
-      if (myHear.value !== mySpeak.value) {
-        const shown = await lingua.translate(text, mySpeak.value,
-          myHear.value);
-        noteTranslateFallback(text, shown, mySpeak.value, myHear.value);
-        capFeed.append(el('p', { style: 'margin:2px 0;font-size:14px;' }, [
-          el('strong', { text: `${myName} (${myHear.value}): ` }),
-          el('span', { text: shown }),
-        ]));
-        await speakOut(shown, myHear.value);
-        paintChips();
+      // During live speaking, do not play the speaker's own translation on
+      // the same device: it holds echo suppression open and can make the next
+      // sentence look like TTS instead of the human. When the mic is stopped,
+      // keep the solo proof/demo path available without blocking uploads.
+      if (myHear.value !== mySpeak.value && !speaking) {
+        Promise.resolve().then(async () => {
+          const shown = await lingua.translate(text, mySpeak.value,
+            myHear.value);
+          noteTranslateFallback(text, shown, mySpeak.value, myHear.value);
+          capFeed.append(el('p', { style: 'margin:2px 0;font-size:14px;' }, [
+            el('strong', { text: `${myName} (${myHear.value}): ` }),
+            el('span', { text: shown }),
+          ]));
+          await speakOut(shown, myHear.value);
+          paintChips();
+        }).catch(() => {});
       }
       capFeed.scrollTop = capFeed.scrollHeight;
     };
@@ -1011,7 +1016,7 @@ export async function render(root, params, ctx) {
         const totalMs = Math.round(performance.now() - (meta.cutAt || started));
         const n = meta.seq || '?';
         recordTiming(`seq=${n} ${mySpeak.value}->${myHear.value} function=${fmtMs(fnMs)} transcribe=${transcribeMs ? fmtMs(transcribeMs) : 'n/a'} total_ms=${totalMs}`, totalMs);
-        if (text) await handleFinal(text, { seq: n, fn_ms: fnMs,
+        if (text) handleFinal(text, { seq: n, fn_ms: fnMs,
           transcribe_ms: transcribeMs, total_ms: totalMs });
         else setDiag('ears', t('room.earsEmpty') || 'No speech was understood in that clip.', true);
       } catch (err) {

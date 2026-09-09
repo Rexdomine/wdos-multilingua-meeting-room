@@ -5,9 +5,10 @@
 // so an Arabic listener saw the correct translation on screen and heard
 // nothing. This function turns text into speech with Groq's Orpheus
 // models (Arabic and English) using the SAME free GROQ_API_KEY as the
-// transcribe function. The room asks for it only when the device itself
-// has no voice for the language; device voices stay first because they
-// are instant and unlimited.
+// transcribe function, plus a no-secret emergency MP3 fallback for Friday
+// French/Portuguese so audio is not dependent on browser voice packs alone.
+// The room asks for it only when the device itself has no voice for the
+// language; device voices stay first because they are instant and unlimited.
 //
 // Deploy WITHOUT any CLI: Supabase Dashboard → Edge Functions →
 // Deploy a new function → name it exactly  speak  → paste this whole
@@ -15,7 +16,7 @@
 // already there from Phase 127.
 //
 // Invocation from the app:
-//   GET  → { configured, langs: ['ar','en'] }
+//   GET  → { configured, langs: ['ar','en','fr','pt'] }
 //   POST { text, lang }  → audio/wav bytes (or JSON error)
 // Errors: 401 not signed in · 400 bad input · 502 speak_failed ·
 //         503 not_configured
@@ -44,12 +45,18 @@ function json(body: unknown, status = 200): Response {
 
 // Language → Groq model + a clear female voice (WODDI is a women's
 // organisation; change the voice names here if a different one suits).
-const VOICES: Record<string, { model: string; voice: string }> = {
+const GROQ_VOICES: Record<string, { model: string; voice: string }> = {
   ar: { model: "canopylabs/orpheus-arabic-saudi", voice: "noura" },
   en: { model: "canopylabs/orpheus-v1-english", voice: "hannah" },
 };
-const MAX_CHARS = 200; // the Arabic model's published input limit
+// Friday fallback: Google Translate's public TTS endpoint returns MP3 for
+// many languages and needs no browser-installed voice. It is not the final
+// enterprise voice provider, but it removes the immediate FR/PT audio gap.
+const GOOGLE_TTS_LANGS = new Set(["fr", "pt"]);
+const LANGS = [...new Set([...Object.keys(GROQ_VOICES), ...GOOGLE_TTS_LANGS])];
+const MAX_CHARS = 180; // safe for Groq Arabic and Google Translate TTS
 const GROQ_URL = "https://api.groq.com/openai/v1/audio/speech";
+const GOOGLE_TTS_URL = "https://translate.google.com/translate_tts";
 
 async function whoAmI(userJwt: string): Promise<{ id: string } | null> {
   try {
@@ -69,10 +76,10 @@ Deno.serve(async (req) => {
 
   const key = (Deno.env.get("GROQ_API_KEY") || "").trim();
   if (req.method === "GET") {
-    return json({ configured: !!key, langs: key ? Object.keys(VOICES) : [] });
+    return json({ configured: true, langs: LANGS,
+      groqConfigured: !!key, fallback: "google_translate_tts" });
   }
   if (req.method !== "POST") return json({ error: "method" }, 405);
-  if (!key) return json({ error: "not_configured", missing: ["GROQ_API_KEY"] }, 503);
 
   const auth = req.headers.get("Authorization") || "";
   const userJwt = auth.replace(/^Bearer\s+/i, "").trim();
@@ -84,8 +91,45 @@ Deno.serve(async (req) => {
   try { body = await req.json(); } catch { body = {}; }
   const text = String(body.text || "").trim().slice(0, MAX_CHARS);
   const lang = String(body.lang || "").trim().toLowerCase();
-  const cfg = VOICES[lang];
-  if (!text || !cfg) return json({ error: "bad_input" }, 400);
+  if (!text || !LANGS.includes(lang)) return json({ error: "bad_input" }, 400);
+
+  if (GOOGLE_TTS_LANGS.has(lang)) {
+    try {
+      const url = new URL(GOOGLE_TTS_URL);
+      url.searchParams.set("ie", "UTF-8");
+      url.searchParams.set("client", "tw-ob");
+      url.searchParams.set("tl", lang);
+      url.searchParams.set("q", text);
+      const r = await fetch(url, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 WDOS-Friday-Audio-QA",
+          "Referer": "https://translate.google.com/",
+        },
+      });
+      if (!r.ok) {
+        const detail = (await r.text()).slice(0, 300);
+        return json({ error: "speak_failed", provider: "google_translate_tts",
+          status: r.status, detail }, 502);
+      }
+      const bytes = new Uint8Array(await r.arrayBuffer());
+      return new Response(bytes, {
+        status: 200,
+        headers: {
+          ...CORS,
+          "Content-Type": "audio/mpeg",
+          "Cache-Control": "no-store",
+          "X-WDOS-Voice-Provider": "google_translate_tts",
+        },
+      });
+    } catch (e) {
+      return json({ error: "speak_failed", provider: "google_translate_tts",
+        detail: String(e).slice(0, 300) }, 502);
+    }
+  }
+
+  const cfg = GROQ_VOICES[lang];
+  if (!cfg) return json({ error: "bad_input" }, 400);
+  if (!key) return json({ error: "not_configured", missing: ["GROQ_API_KEY"] }, 503);
 
   try {
     const r = await fetch(GROQ_URL, {

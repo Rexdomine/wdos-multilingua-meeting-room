@@ -673,7 +673,7 @@ export const getAnnouncementReach = (annId) =>
 /** The migration number this build of the app requires. Bump with every
  *  new migration; the shell warns HQ when the database is behind. */
 export const EXPECTED_SCHEMA_VERSION = 115;
-export const APP_VERSION = '68.4-friday-audio-qa';
+export const APP_VERSION = '68.5-realtime-voice-fallback';
 
 export async function getSchemaStatus() {
   try {
