@@ -35,14 +35,15 @@ export async function unlockAudio() {
   const audio = ensureOutputAudio();
   let mediaOk = false;
   if (!warmupUrl) warmupUrl = tinyWarmupUrl();
+  const pending = [];
   try {
     audio.pause();
     audio.src = warmupUrl;
     audio.currentTime = 0;
     audio.volume = 0.04;
     const playPromise = audio.play();
-    if (playPromise?.then) await playPromise;
-    mediaOk = true;
+    if (playPromise?.then) pending.push(playPromise.then(() => { mediaOk = true; }));
+    else mediaOk = true;
     setTimeout(() => {
       try { audio.pause(); audio.currentTime = 0; audio.volume = 1; } catch { /* optional */ }
     }, 120);
@@ -53,7 +54,6 @@ export async function unlockAudio() {
   let ctxOk = false;
   if (AC) {
     if (!audioCtx) audioCtx = new AC();
-    if (audioCtx.state !== 'running') await audioCtx.resume();
     const buffer = audioCtx.createBuffer(1, 1, audioCtx.sampleRate);
     const source = audioCtx.createBufferSource();
     const gain = audioCtx.createGain();
@@ -61,8 +61,11 @@ export async function unlockAudio() {
     source.buffer = buffer;
     source.connect(gain).connect(audioCtx.destination);
     source.start(0);
-    ctxOk = audioCtx.state === 'running';
+    if (audioCtx.state !== 'running') {
+      pending.push(audioCtx.resume().then(() => { ctxOk = audioCtx.state === 'running'; }));
+    } else ctxOk = true;
   }
+  if (pending.length) await Promise.allSettled(pending);
   return mediaOk || ctxOk;
 }
 
@@ -372,8 +375,7 @@ export function createLingua() {
     if (aborted(signal)) throw new DOMException('cancelled', 'AbortError');
   }
 
-  async function playBlobWithElement(blob, signal) {
-    const url = URL.createObjectURL(blob);
+  async function playUrlWithElement(url, signal, revoke = false) {
     const audio = ensureOutputAudio();
     audio.preload = 'auto';
     let cleanup = () => {};
@@ -413,8 +415,13 @@ export function createLingua() {
       throwIfAborted(signal);
     } finally {
       cleanup();
-      setTimeout(() => URL.revokeObjectURL(url), 30000);
+      if (revoke) setTimeout(() => URL.revokeObjectURL(url), 30000);
     }
+  }
+
+  async function playBlobWithElement(blob, signal) {
+    const url = URL.createObjectURL(blob);
+    await playUrlWithElement(url, signal, true);
   }
 
   async function playBlobWithContext(blob, signal) {
@@ -554,27 +561,14 @@ export function createLingua() {
         const url = await spaceSpeakTest(info.space, text, info.lang3,
           () => {}, { patience: 15000 });
         if (aborted(signal)) return 'cancelled';
-        const audio = new Audio(url);
         await beforeStart?.();
-        let finishAudio = () => {};
-        const cancel = () => {
-          try { audio.pause(); audio.currentTime = 0; } catch { /* optional */ }
-          finishAudio();
-        };
-        signal?.addEventListener?.('abort', cancel, { once: true });
-        try { await audio.play(); }
+        try { await playUrlWithElement(url, signal); }
         catch {
           status.voice = 'blocked';
           status.voiceDetail = 'Tap required to start generated audio';
           onBlockedUrl?.(url);
           return 'blocked';
         }
-        await withTimeout(new Promise((r) => {
-          finishAudio = r;
-          audio.onended = r;
-          audio.onerror = r;
-        }), Math.max(2500, estimateSpeakMs(text) + 3000), 'audio-ended-timeout');
-        signal?.removeEventListener?.('abort', cancel);
         if (aborted(signal)) return 'cancelled';
         status.voice = 'ai';
         status.voiceDetail = info.detail;
@@ -595,5 +589,6 @@ export function createLingua() {
     return job;
   }
 
-  return { translate, speak, voiceStatus, unlockAudio, estimateSpeakMs, status };
+  return { translate, speak, voiceStatus, unlockAudio,
+    playUrl: playUrlWithElement, estimateSpeakMs, status };
 }

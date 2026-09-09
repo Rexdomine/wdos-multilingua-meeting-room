@@ -327,12 +327,7 @@ export async function render(root, params, ctx) {
         const url = audioQueue.shift();
         paintAudioQueue();
         try {
-          const audio = new Audio(url);
-          await audio.play();
-          await withTimeout(new Promise((resolve) => {
-            audio.onended = resolve;
-            audio.onerror = resolve;
-          }), 18000, 'queued-audio-timeout');
+          await withTimeout(lingua.playUrl(url), 18000, 'queued-audio-timeout');
           try { URL.revokeObjectURL(url); } catch { /* optional */ }
         } catch {
           audioQueue.unshift(url);
@@ -376,7 +371,9 @@ export async function render(root, params, ctx) {
       }
     };
     const paintAudioToggle = () => {
-      audioToggle.textContent = liveAudioOn ? '🔊 Audio ON' : '🔇 Audio OFF';
+      audioToggle.textContent = liveAudioOn
+        ? (audioUnlocked ? '🔊 Audio ON' : '▶ Enable audio')
+        : '🔇 Audio OFF';
       audioToggle.classList.toggle('btn--primary', liveAudioOn);
       audioToggle.classList.toggle('btn--secondary', !liveAudioOn);
       audioToggle.setAttribute('aria-pressed', liveAudioOn ? 'true' : 'false');
@@ -385,11 +382,20 @@ export async function render(root, params, ctx) {
         : 'Live translated audio is OFF. Tap to turn it on.';
     };
     audioToggle.onclick = async () => {
+      if (liveAudioOn && !audioUnlocked) {
+        await primeAudio();
+        paintAudioToggle();
+        await flushAudioQueue();
+        diagnoseVoiceLane();
+        toast(audioUnlocked ? 'Live translated audio ready' : 'Tap again to enable audio');
+        return;
+      }
       liveAudioOn = !liveAudioOn;
       localStorage.setItem('wdos.room.liveAudio', liveAudioOn ? 'on' : 'off');
       paintAudioToggle();
       if (!liveAudioOn) {
         cancelVoice();
+        audioUnlocked = false;
         setDiag('voice', '');
       } else {
         primeAudio().then(() => flushAudioQueue()).then(() => diagnoseVoiceLane()).catch(() => {});
@@ -583,7 +589,7 @@ export async function render(root, params, ctx) {
       b.onclick = async () => {
         const ok = await primeAudio();
         if (url) {
-          try { await new Audio(url).play(); } catch { /* user can tap Test audio */ }
+          try { await lingua.playUrl(url); } catch { /* user can tap Audio ON */ }
         }
         b.remove();
         if (!ok) setDiag('voice', t('room.voiceBlocked'), true);
