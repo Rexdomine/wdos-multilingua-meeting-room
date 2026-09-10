@@ -35,18 +35,16 @@ export async function unlockAudio() {
   const audio = ensureOutputAudio();
   let mediaOk = false;
   if (!warmupUrl) warmupUrl = tinyWarmupUrl();
-  const pending = [];
   try {
     audio.pause();
     audio.src = warmupUrl;
     audio.currentTime = 0;
     audio.volume = 0.04;
     const playPromise = audio.play();
-    if (playPromise?.then) pending.push(playPromise.then(() => { mediaOk = true; }));
-    else mediaOk = true;
-    setTimeout(() => {
-      try { audio.pause(); audio.currentTime = 0; audio.volume = 1; } catch { /* optional */ }
-    }, 120);
+    if (playPromise?.then) await withTimeout(playPromise, 1200, 'audio-unlock-timeout');
+    mediaOk = true;
+    await new Promise((resolve) => setTimeout(resolve, 160));
+    try { audio.pause(); audio.currentTime = 0; audio.volume = 1; } catch { /* optional */ }
   } catch {
     try { audio.volume = 1; } catch { /* optional */ }
   }
@@ -62,11 +60,11 @@ export async function unlockAudio() {
     source.connect(gain).connect(audioCtx.destination);
     source.start(0);
     if (audioCtx.state !== 'running') {
-      pending.push(audioCtx.resume().then(() => { ctxOk = audioCtx.state === 'running'; }));
+      await audioCtx.resume().catch(() => {});
+      ctxOk = audioCtx.state === 'running';
     } else ctxOk = true;
   }
-  if (pending.length) await Promise.allSettled(pending);
-  return mediaOk || ctxOk;
+  return mediaOk || (!HTMLMediaElement.prototype.play && ctxOk);
 }
 
 function ensureOutputAudio() {
